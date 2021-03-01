@@ -558,9 +558,9 @@ struct LayerPin
 
 struct LayerData
 {
-    LayerData() : id(-1), skip(false), flag(0) {}
+    LayerData() : id(-1), dtype(CV_32F), skip(false), flag(0) {}
     LayerData(int _id, const String &_name, const String &_type, LayerParams &_params)
-        : id(_id), name(_name), type(_type), params(_params), skip(false), flag(0)
+        : id(_id), name(_name), type(_type), params(_params), dtype(CV_32F), skip(false), flag(0)
     {
         CV_TRACE_FUNCTION();
 
@@ -573,6 +573,7 @@ struct LayerData
     String name;
     String type;
     LayerParams params;
+    int dtype; // Datatype of input and output blobs
 
     std::vector<LayerPin> inputBlobsId;
     std::set<int> inputLayersId;
@@ -928,7 +929,7 @@ public:
         }
     }
 
-    void reuseOrCreate(const MatShape& shape, const LayerPin& lp, Mat& dst, bool use_half)
+    void reuseOrCreate(const MatShape& shape, const LayerPin& lp, Mat& dst, const int& dtype)
     {
         if (!DNN_DISABLE_MEMORY_OPTIMIZATIONS)
         {
@@ -969,14 +970,13 @@ public:
         {
             // if dst already has been allocated with total(shape) elements,
             // it won't be recreated and pointer of dst.data remains the same.
-            dst.create(shape, use_half ? CV_16S : CV_32F);
+            dst.create(shape, dtype);
             addHost(lp, dst);
         }
     }
 
     void allocateBlobsForLayer(LayerData &ld, const LayerShapes& layerShapes,
-                               std::vector<LayerPin>& pinsForInternalBlobs,
-                               bool use_half = false)
+                               std::vector<LayerPin>& pinsForInternalBlobs)
     {
         CV_TRACE_FUNCTION();
 
@@ -1047,7 +1047,7 @@ public:
                         reuse(ld.inputBlobsId[0], blobPin);
                     }
                     else
-                        reuseOrCreate(shapes[index], blobPin, *blobs[index], use_half);
+                        reuseOrCreate(shapes[index], blobPin, *blobs[index], ld.dtype);
                 }
             }
         }
@@ -1177,6 +1177,7 @@ struct Net::Impl : public detail::NetImplBase
 
         lastLayerId = 0;
         netWasAllocated = false;
+        netWasQuantized = false;
         fusion = true;
         isAsync = false;
         preferableBackend = DNN_BACKEND_DEFAULT;
@@ -1201,6 +1202,7 @@ struct Net::Impl : public detail::NetImplBase
     int lastLayerId;
 
     bool netWasAllocated;
+    bool netWasQuantized;
     bool fusion;
     bool isAsync;
     std::vector<int64> layersTimings;
@@ -2505,10 +2507,13 @@ struct Net::Impl : public detail::NetImplBase
 
         CV_Assert(layerShapesIt != layersShapes.end());
 
+        if (preferableBackend == DNN_BACKEND_OPENCV && preferableTarget == DNN_TARGET_OPENCL_FP16)
+            ld.dtype = CV_16S;
+        else if (netWasQuantized)
+            ld.dtype = CV_8S;
+
         std::vector<LayerPin> pinsForInternalBlobs;
-        blobManager.allocateBlobsForLayer(ld, layerShapesIt->second, pinsForInternalBlobs,
-                                          preferableBackend == DNN_BACKEND_OPENCV &&
-                                          preferableTarget == DNN_TARGET_OPENCL_FP16);
+        blobManager.allocateBlobsForLayer(ld, layerShapesIt->second, pinsForInternalBlobs);
         ld.outputBlobsWrappers.resize(ld.outputBlobs.size());
         for (int i = 0; i < ld.outputBlobs.size(); ++i)
             ld.outputBlobsWrappers[i] = wrap(ld.outputBlobs[i]);
@@ -3422,6 +3427,32 @@ struct Net::Impl : public detail::NetImplBase
 #endif
     }
 
+    LayerData quantizeLayer(LayerData &ld)
+    {
+        CV_TRACE_FUNCTION();
+
+        if (ld.skip)
+            return ld;
+
+        Ptr<Layer> layer = ld.layerInstance;
+        std::vector<float> scales(2);
+        std::vector<int> zeroPoints(2);
+        std::vector<Mat> inps(ld.inputBlobs.size());
+        for (int i = 0; i < ld.inputBlobs.size(); ++i)
+        {
+            inps[i] = *ld.inputBlobs[i];
+        }
+        layer->forward(inps, ld.outputBlobs, ld.internals);
+        layer->quantize(inps, ld.outputBlobs, scales, zeroPoints);
+
+        LayerParams quantizedParams = ld.params;
+        quantizedParams.set("input_scale", scales[0]); quantizedParams.set("input_zeropoint", zeroPoints[0]);
+        quantizedParams.set("output_scale", scales[1]); quantizedParams.set("output_zeropoint", zeroPoints[1]);
+        quantizedParams.blobs = layer->quantizedBlobs;
+
+        return LayerData(ld.id, ld.name, ld.type+"Int8", quantizedParams);
+    }
+
     void getLayerShapesRecursively(int id, LayersShapesMap& inOutShapes)
     {
         std::vector<LayerPin>& inputLayerIds = layers[id].inputBlobsId;
@@ -4122,15 +4153,18 @@ void Net::forward(OutputArrayOfArrays outputBlobs, const String& outputName)
                 ld.outputBlobsWrappers[i]->copyToHost();
             }
         }
-        if (ld.outputBlobs[0].depth() == CV_32F)
+        if (ld.outputBlobs[0].depth() == CV_16S)
         {
-            std::vector<Mat> & outputvec = *(std::vector<Mat> *)outputBlobs.getObj();
-            outputvec = ld.outputBlobs;
-        } else {
             std::vector<Mat> & outputvec = *(std::vector<Mat> *)outputBlobs.getObj();
             outputvec.resize(ld.outputBlobs.size());
             for (int i = 0; i < outputvec.size(); i++)
                 convertFp16(ld.outputBlobs[i], outputvec[i]);
+        }
+        else
+        {
+            // Output depth can be CV_32F or CV_8S
+            std::vector<Mat> & outputvec = *(std::vector<Mat> *)outputBlobs.getObj();
+            outputvec = ld.outputBlobs;
         }
     }
     else if (outputBlobs.isUMatVector())
@@ -4213,6 +4247,74 @@ void Net::forward(std::vector<std::vector<Mat> >& outputBlobs,
         for (int j = 0; j < lp.size(); j++)
         {
             outputBlobs[i][j] = impl->getBlob(lp[j]);
+        }
+    }
+}
+
+Net Net::quantize(InputArray refData)
+{
+    CV_TRACE_FUNCTION();
+
+    if (impl->netWasQuantized)
+        return *this;
+
+    Net::setInput(refData);
+    String layerName = getLayerNames().back();
+    std::vector<LayerPin> pins(1, impl->getPinByAlias(layerName));
+    impl->setUpNet(pins);
+
+    Net dstNet;
+    Impl::MapIdToLayerData::iterator it = impl->layers.begin();
+    it++; // skip Data layer
+    for( ; it != impl->layers.end(); it++ )
+    {
+        LayerData &ld = it->second;
+        LayerData qld = impl->quantizeLayer(ld);
+
+        int newLid = dstNet.addLayer(qld.name, qld.type, qld.params);
+        for( int i = 0; i < ld.inputBlobsId.size(); i++ )
+        {
+            LayerPin &pin = ld.inputBlobsId[i];
+            int prvLid = pin.lid;
+            dstNet.connect(prvLid, 0, newLid, i);
+        }
+    }
+    dstNet.impl->netWasQuantized = true;
+    return dstNet;
+}
+
+void Net::getInputDetails(float& scale, int& zeroPoint) const
+{
+    if (!impl->netWasQuantized)
+        CV_Error(Error::StsBadFunc, "Net isn't quantized");
+
+    for (Impl::MapIdToLayerData::iterator it = impl->layers.begin();
+         it != impl->layers.end(); ++it)
+    {
+        LayerParams &lp = it->second.params;
+        if (lp.has("input_scale"))
+        {
+            scale = lp.get<float>("input_scale");
+            zeroPoint = lp.get<int>("input_zeropoint");
+            break;
+        }
+    }
+}
+
+void Net::getOutputDetails(float& scale, int& zeroPoint) const
+{
+    if (!impl->netWasQuantized)
+        CV_Error(Error::StsBadFunc, "Net isn't quantized");
+
+    for (Impl::MapIdToLayerData::reverse_iterator it = impl->layers.rbegin();
+         it != impl->layers.rend(); ++it)
+    {
+        LayerParams &lp = it->second.params;
+        if (lp.has("output_scale"))
+        {
+            scale = lp.get<float>("output_scale");
+            zeroPoint = lp.get<int>("output_zeropoint");
+            break;
         }
     }
 }
@@ -4888,9 +4990,10 @@ void Net::getMemoryConsumption(const int layerId,
 
     ShapesVec inLayerShapes, outLayerShapes;
     getLayerShapes(netInputShapes, layerId, inLayerShapes, outLayerShapes);
+    size_t elemSize = (impl->netWasQuantized) ? sizeof(char) : sizeof(float);
     for(int i = 0; i < outLayerShapes.size(); i++)
     {
-        blobs += total(outLayerShapes[i]) * sizeof(float);
+        blobs += total(outLayerShapes[i]) * elemSize;
     }
 }
 
@@ -4939,7 +5042,7 @@ void Net::getMemoryConsumption(const std::vector<MatShape>& netInputShapes,
     std::vector<std::vector<MatShape> > inLayerShapes, outLayerShapes;
 
     getLayersShapes(netInputShapes, layerIds, inLayerShapes, outLayerShapes);
-
+    size_t elemSize = (impl->netWasQuantized) ? sizeof(char) : sizeof(float);
     for(int i = 0; i < layerIds.size(); i++)
     {
         int w = 0, b = 0;
@@ -4954,7 +5057,7 @@ void Net::getMemoryConsumption(const std::vector<MatShape>& netInputShapes,
 
         for(int j = 0; j < outLayerShapes[i].size(); j++)
         {
-            b += total(outLayerShapes[i][j]) * sizeof(float);
+            b += total(outLayerShapes[i][j]) * elemSize;
         }
 
         weights.push_back(w);
@@ -5272,6 +5375,16 @@ void Layer::run(const std::vector<Mat> &inputs, std::vector<Mat> &outputs, std::
 
     this->finalize(inputs, outputs);
     this->forward(inputs, outputs, internals);
+}
+
+void Layer::quantize(InputArrayOfArrays inputs_arr, InputArrayOfArrays outputs_arr,
+                     std::vector<float> &scales, std::vector<int> &zeroPoints)
+{
+    std::vector<Mat> inputs, outputs;
+    inputs_arr.getMatVector(inputs);
+    outputs_arr.getMatVector(outputs);
+
+    this->quantize(inputs, outputs, scales, zeroPoints);
 }
 
 Layer::~Layer() {}

@@ -186,6 +186,8 @@ CV__DNN_INLINE_NS_BEGIN
 
         //! List of learned parameters must be stored here to allow read them by using Net::getParam().
         CV_PROP_RW std::vector<Mat> blobs;
+        //! List of parameters required for int8 layers must be stored here.
+        CV_PROP_RW std::vector<Mat> quantizedBlobs;
 
         /** @brief Computes and sets internal parameters according to inputs, outputs and blobs.
          *  @deprecated Use Layer::finalize(InputArrayOfArrays, OutputArrayOfArrays) instead
@@ -222,6 +224,14 @@ CV__DNN_INLINE_NS_BEGIN
          *  @param[out] internals allocated internal blobs
          */
         virtual void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs, OutputArrayOfArrays internals);
+
+        /** @brief Given the @p input and @p output blobs, computes the scales and zero-points.
+         *  @param[in]  inputs  input blobs
+         *  @param[in]  outputs output blobs computed by forward()
+         *  @param[out] scales  stores input and output scales for quantization
+         *  @param[out] zeroPoints stores input and output zero-points for quantization
+         */
+        virtual void quantize(InputArrayOfArrays inputs, InputArrayOfArrays outputs, std::vector<float> &scales, std::vector<int> &zeroPoints);
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  inputs  the input blobs.
@@ -538,6 +548,23 @@ CV__DNN_INLINE_NS_BEGIN
          */
         CV_WRAP_AS(forwardAndRetrieve) void forward(CV_OUT std::vector<std::vector<Mat> >& outputBlobs,
                                                     const std::vector<String>& outBlobNames);
+
+        /** @brief Returns a quantized Net from a floating-point Net.
+         *  @param refData contains reference data to compute the quantization parameters.
+         */
+        CV_WRAP Net quantize(InputArray refData);
+
+        /** @brief Returns input scale and zeropoint for a quantized Net.
+         *  @param scale output parameter for returning input scale.
+         *  @param zeroPoint output parameter for returning input zero-point.
+         */
+        CV_WRAP void getInputDetails(CV_OUT float& scale, CV_OUT int& zeroPoint) const;
+
+        /** @brief Returns output scale and zeropoint for a quantized Net.
+         *  @param scale output parameter for returning output scale.
+         *  @param zeroPoint output parameter for returning output zero-point.
+         */
+        CV_WRAP void getOutputDetails(CV_OUT float& scale, CV_OUT int& zeroPoint) const;
 
         /**
          * @brief Compile Halide layers.
