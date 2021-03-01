@@ -2065,6 +2065,55 @@ public:
     }
 #endif
 
+    virtual void quantize(InputArrayOfArrays inputs_arr, InputArrayOfArrays outputs_arr,
+                          std::vector<float> &scales, std::vector<int> &zeroPoints) CV_OVERRIDE
+    {
+        std::vector<Mat> inputs, outputs;
+        inputs_arr.getMatVector(inputs);
+        outputs_arr.getMatVector(outputs);
+
+        float inputScale, outputScale, weightsScale;
+        int inputZp, outputZp, weightsZp;
+        getQuantizationParams(inputs[0], inputScale, inputZp);
+        getQuantizationParams(outputs[0], outputScale, outputZp);
+        scales[0] = inputScale; scales[1] = outputScale;
+        zeroPoints[0] = inputZp; zeroPoints[1] = outputZp;
+
+        Mat additionalParams(2, numOutput, CV_32S);
+        int* params = additionalParams.ptr<int>();
+        const int bits_precision = 23;
+
+        MatShape weightShape = blobs.empty() ? shape(inputs[1]) : shape(blobs[0]);
+        Mat weights = blobs.empty() ? inputs[1].reshape(1, numOutput) : blobs[0].reshape(1, numOutput);
+        Mat weightsQuantized(weights.rows, weights.cols, CV_8S);
+        std::vector<float> weights_scale_vec;
+
+        for( int i = 0; i < numOutput; i++ )
+        {
+            getQuantizationParams(weights.row(i), weightsScale, weightsZp, false, true);
+            weights_scale_vec.push_back(weightsScale);
+            weights.row(i).convertTo(weightsQuantized.row(i), CV_8S, 1.f/weightsScale);
+
+            float realMult = (inputScale * weightsScale)/outputScale;
+            params[i] = std::round(realMult * (1 << (bits_precision - 1)));
+            params[i + numOutput] = -inputZp*(cv::sum(weightsQuantized.row(i))[0]);
+        }
+        quantizedBlobs.push_back(additionalParams);
+        quantizedBlobs.push_back(weightsQuantized.reshape(1, weightShape));
+
+        if( hasBias() )
+        {
+            Mat bias = blobs[1].reshape(1, numOutput);
+            Mat biasQuantized(bias.rows, bias.cols, CV_32S);
+            for( int i = 0; i < numOutput; i++ )
+            {
+                float biasScale = inputScale*weights_scale_vec[i];
+                bias.row(i).convertTo(biasQuantized.row(i), CV_32S, 1.f/biasScale);
+            }
+            quantizedBlobs.push_back(biasQuantized);
+        }
+    }
+
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
                            const std::vector<MatShape> &outputs) const CV_OVERRIDE
     {

@@ -139,6 +139,8 @@ void initializeLayerFactory()
     CV_DNN_REGISTER_LAYER_CLASS(FlowWarp,       FlowWarpLayer);
 
     CV_DNN_REGISTER_LAYER_CLASS(LSTM,           LSTMLayer);
+
+    CV_DNN_REGISTER_LAYER_CLASS(ConvolutionInt8, ConvolutionLayerInt8);
 }
 
 CV__DNN_INLINE_NS_END

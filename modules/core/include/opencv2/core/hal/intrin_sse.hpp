@@ -971,15 +971,16 @@ inline v_int32x4 v_dotprod_expand_fast(const v_int8x16& a, const v_int8x16& b)
 {
 #if CV_SSE4_1
     __m128i a0 = _mm_cvtepi8_epi16(a.val);
-    __m128i a1 = v_expand_high(a).val;
     __m128i b0 = _mm_cvtepi8_epi16(b.val);
+#else
+    __m128i a0 = v_expand_low(a).val;
+    __m128i b0 = v_expand_low(b).val;
+#endif
+    __m128i a1 = v_expand_high(a).val;
     __m128i b1 = v_expand_high(b).val;
     __m128i p0 = _mm_madd_epi16(a0, b0);
     __m128i p1 = _mm_madd_epi16(a1, b1);
     return v_int32x4(_mm_add_epi32(p0, p1));
-#else
-    return v_dotprod_expand(a, b);
-#endif
 }
 inline v_int32x4 v_dotprod_expand_fast(const v_int8x16& a, const v_int8x16& b, const v_int32x4& c)
 { return v_dotprod_expand_fast(a, b) + c; }
@@ -1733,6 +1734,20 @@ inline v_float32x4 v_reduce_sum4(const v_float32x4& a, const v_float32x4& b,
     __m128 ac = _mm_add_ps(_mm_unpacklo_ps(a.val, c.val), _mm_unpackhi_ps(a.val, c.val));
     __m128 bd = _mm_add_ps(_mm_unpacklo_ps(b.val, d.val), _mm_unpackhi_ps(b.val, d.val));
     return v_float32x4(_mm_add_ps(_mm_unpacklo_ps(ac, bd), _mm_unpackhi_ps(ac, bd)));
+#endif
+}
+
+inline v_int32x4 v_reduce_sum4(const v_int32x4& a, const v_int32x4& b,
+                               const v_int32x4& c, const v_int32x4& d)
+{
+#if CV_SSSE3
+    __m128i ab = _mm_hadd_epi32(a.val, b.val);
+    __m128i cd = _mm_hadd_epi32(c.val, d.val);
+    return v_int32x4(_mm_hadd_epi32(ab, cd));
+#else
+    __m128i ac = _mm_add_epi32(_mm_unpacklo_epi32(a.val, c.val), _mm_unpackhi_epi32(a.val, c.val));
+    __m128i bd = _mm_add_epi32(_mm_unpacklo_epi32(b.val, d.val), _mm_unpackhi_epi32(b.val, d.val));
+    return v_int32x4(_mm_add_epi32(_mm_unpacklo_epi32(ac, bd), _mm_unpackhi_epi32(ac, bd)));
 #endif
 }
 
@@ -3390,6 +3405,19 @@ template<int i>
 inline v_float32x4 v_broadcast_element(const v_float32x4& v)
 {
     return v_float32x4(_mm_shuffle_ps(v.val, v.val, _MM_SHUFFLE((char)i,(char)i,(char)i,(char)i)));
+}
+
+////////////// Quantization ///////////////////////////
+inline v_int32x4 v_outputStage(const v_int32x4& accum, const v_int32x4& multiplier,
+                               const int& outZp)
+{
+    __m128i mul = _v128_mullo_epi32(accum.val, multiplier.val);
+    __m128i nudge = _mm_set1_epi32(1 << 21);
+    __m128i rshr =  _mm_srai_epi32(_mm_add_epi32(mul, nudge), 22);
+    __m128i output = _mm_add_epi32(_mm_set1_epi32(outZp), rshr);
+
+    v_int32x4 qmin = v_setall_s32(-128), qmax = v_setall_s32(127);
+    return v_min(v_max(v_int32x4(output), qmin), qmax);
 }
 
 ////////////// FP16 support ///////////////////////////

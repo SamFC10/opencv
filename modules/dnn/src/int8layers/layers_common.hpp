@@ -48,7 +48,7 @@
 #define CV_CPU_OPTIMIZATION_DECLARATIONS_ONLY
 // dispatched AVX/AVX2 optimizations
 #include "./layers_common.simd.hpp"
-#include "layers/layers_common.simd_declarations.hpp"
+#include "int8layers/layers_common.simd_declarations.hpp"
 #undef CV_CPU_OPTIMIZATION_DECLARATIONS_ONLY
 
 #ifdef HAVE_OPENCL
@@ -73,9 +73,6 @@ void getConvPoolOutParams(const std::vector<int>& inp, const std::vector<size_t>
  void getConvPoolPaddings(const std::vector<int>& inp, const std::vector<size_t>& kernel,
                           const std::vector<size_t>& strides, const String &padMode,
                           std::vector<size_t>& pads_begin, std::vector<size_t>& pads_end);
-
-void getQuantizationParams(const Mat& src, float& scale, int& zeropoint, bool is_reference_data = true,
-                           bool fix_zeropoint_to_zero = false);
 }
 }
 

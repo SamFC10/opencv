@@ -224,6 +224,13 @@ CV__DNN_INLINE_NS_BEGIN
         static Ptr<BaseConvolutionLayer> create(const LayerParams& params);
     };
 
+    class CV_EXPORTS ConvolutionLayerInt8 : public BaseConvolutionLayer
+    {
+    public:
+        int input_zp, output_zp;
+        static Ptr<BaseConvolutionLayer> create(const LayerParams& params);
+    };
+
     class CV_EXPORTS DeconvolutionLayer : public BaseConvolutionLayer
     {
     public:
