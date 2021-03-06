@@ -231,7 +231,8 @@ CV__DNN_INLINE_NS_BEGIN
          *  @param[out] scales  stores input and output scales for quantization
          *  @param[out] zeroPoints stores input and output zero-points for quantization
          */
-        virtual void quantize(InputArrayOfArrays inputs, InputArrayOfArrays outputs, std::vector<float> &scales, std::vector<int> &zeroPoints);
+        virtual void quantize(InputArrayOfArrays inputs, InputArrayOfArrays outputs,
+                              std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeroPoints);
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  inputs  the input blobs.
@@ -552,18 +553,24 @@ CV__DNN_INLINE_NS_BEGIN
         /** @brief Returns a quantized Net from a floating-point Net.
          *  @param refData contains reference data to compute the quantization parameters.
          */
-        CV_WRAP Net quantize(InputArray refData);
+        CV_WRAP Net quantize(InputArrayOfArrays refData);
 
         /** @brief Returns input scale and zeropoint for a quantized Net.
-         *  @param scale output parameter for returning input scale.
-         *  @param zeroPoint output parameter for returning input zero-point.
+         *  @param scales output parameter for returning input scales.
+         *  @param zeroPoints output parameter for returning input zero-points.
          */
+        CV_WRAP void getInputDetails(CV_OUT std::vector<float>& scales, CV_OUT std::vector<int>& zeroPoints) const;
+
+        /** @overload For Nets with single input.*/
         CV_WRAP void getInputDetails(CV_OUT float& scale, CV_OUT int& zeroPoint) const;
 
         /** @brief Returns output scale and zeropoint for a quantized Net.
-         *  @param scale output parameter for returning output scale.
-         *  @param zeroPoint output parameter for returning output zero-point.
+         *  @param scales output parameter for returning output scales.
+         *  @param zeroPoints output parameter for returning output zero-points.
          */
+        CV_WRAP void getOutputDetails(CV_OUT std::vector<float>& scales, CV_OUT std::vector<int>& zeroPoints) const;
+
+        /** @overload For Nets with single output.*/
         CV_WRAP void getOutputDetails(CV_OUT float& scale, CV_OUT int& zeroPoint) const;
 
         /**

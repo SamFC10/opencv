@@ -2066,7 +2066,7 @@ public:
 #endif
 
     virtual void quantize(InputArrayOfArrays inputs_arr, InputArrayOfArrays outputs_arr,
-                          std::vector<float> &scales, std::vector<int> &zeroPoints) CV_OVERRIDE
+                          std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeroPoints) CV_OVERRIDE
     {
         std::vector<Mat> inputs, outputs;
         inputs_arr.getMatVector(inputs);
@@ -2076,8 +2076,10 @@ public:
         int inputZp, outputZp, weightsZp;
         getQuantizationParams(inputs[0], inputScale, inputZp);
         getQuantizationParams(outputs[0], outputScale, outputZp);
-        scales[0] = inputScale; scales[1] = outputScale;
-        zeroPoints[0] = inputZp; zeroPoints[1] = outputZp;
+        scales[0].push_back(inputScale);
+        scales[1].push_back(outputScale);
+        zeroPoints[0].push_back(inputZp);
+        zeroPoints[1].push_back(outputZp);
 
         Mat additionalParams(2, numOutput, CV_32S);
         int* params = additionalParams.ptr<int>();
@@ -2098,6 +2100,7 @@ public:
             params[i] = std::round(realMult * (1 << (bits_precision - 1)));
             params[i + numOutput] = -inputZp*(cv::sum(weightsQuantized.row(i))[0]);
         }
+
         quantizedBlobs.push_back(additionalParams);
         quantizedBlobs.push_back(weightsQuantized.reshape(1, weightShape));
 

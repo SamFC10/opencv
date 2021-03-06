@@ -109,7 +109,7 @@ public:
         {
             // Quantize inputs to int8
             // int8_value = float_value/scale + zero-point
-            inps[i].convertTo(inps_int8[i], CV_8S, 1.f/inputScale, inputZp);
+            inps[i].convertTo(inps_int8[i], CV_8S, 1.f/inputScale[i], inputZp[i]);
             qnet.setInput(inps_int8[i]);
         }
         qnet.forward(outs_int8);
@@ -117,7 +117,7 @@ public:
         {
             // Dequantize outputs and compare with reference outputs
             // float_value = scale*(int8_value - zero-point)
-            outs_int8[i].convertTo(outs_dequantized[i], CV_32F, outputScale, -(outputScale * outputZp));
+            outs_int8[i].convertTo(outs_dequantized[i], CV_32F, outputScale[i], -(outputScale[i] * outputZp[i]));
             normAssert(refs[i], outs_dequantized[i], "", l1, lInf);
         }
     }
