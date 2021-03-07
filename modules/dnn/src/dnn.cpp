@@ -4271,6 +4271,11 @@ Net Net::quantize(InputArrayOfArrays refData)
         std::vector<Mat> refDataVec;
         refData.getMatVector(refDataVec);
         std::vector<String> inpNames = impl->netInputLayer->outNames;
+        // netInputLayer->outNames will not be empty if setInputsNames() has been called before. There is no issue if the Net was created
+        // using readNet() and their variants like readNetFromCaffe() as setInputsNames() is called automatically.
+        // But if a Net is created by adding individual layers to it using the addLayer() or addLayerToPrev() functions,
+        // then setInputsNames() HAS to be called before quantize() so that outNames is not empty.
+        // Not doing so will cause the below check and other checks depending on netInputLayer->outNames to fail.
         CV_CheckEQ(refDataVec.size(), inpNames.size(), "Reference data size should be equal to number of inputs");
         for (int i = 0; i < refDataVec.size(); i++)
         {
@@ -4346,7 +4351,7 @@ void Net::getInputDetails(float& scale, int& zeroPoint) const
     std::vector<float> scale_;
     std::vector<int> zeroPoint_;
     getInputDetails(scale_, zeroPoint_);
-    CV_CheckEQ(scale_.size(), 1, "Net has more than one inputs");
+    CV_CheckEQ(scale_.size(), (size_t)1, "Net has more than one inputs");
     scale = scale_[0];
     zeroPoint = zeroPoint_[0];
 }
@@ -4389,7 +4394,7 @@ void Net::getOutputDetails(float& scale, int& zeroPoint) const
     std::vector<float> scale_;
     std::vector<int> zeroPoint_;
     getOutputDetails(scale_, zeroPoint_);
-    CV_CheckEQ(scale_.size(), 1, "Net has more than one outputs");
+    CV_CheckEQ(scale_.size(), (size_t)1, "Net has more than one outputs");
     scale = scale_[0];
     zeroPoint = zeroPoint_[0];
 }

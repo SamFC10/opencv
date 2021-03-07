@@ -66,6 +66,7 @@ public:
         String inpPath, outPath;
         Net net, qnet;
 
+        // Reuse as much data as possible from OpenCV Extra repo to test all variations of quantized layers.
         if (importer == "Caffe")
         {
             String prototxt = _tf("layers/" + basename + ".prototxt");
@@ -105,18 +106,20 @@ public:
         qnet = net.quantize(inps);
         qnet.getInputDetails(inputScale, inputZp);
         qnet.getOutputDetails(outputScale, outputZp);
+
+        // Quantize inputs to int8
+        // int8_value = float_value/scale + zero-point
         for (int i = 0; i < numInps; i++)
         {
-            // Quantize inputs to int8
-            // int8_value = float_value/scale + zero-point
             inps[i].convertTo(inps_int8[i], CV_8S, 1.f/inputScale[i], inputZp[i]);
             qnet.setInput(inps_int8[i]);
         }
         qnet.forward(outs_int8);
+
+        // Dequantize outputs and compare with reference outputs
+        // float_value = scale*(int8_value - zero-point)
         for (int i = 0; i < numOuts; i++)
         {
-            // Dequantize outputs and compare with reference outputs
-            // float_value = scale*(int8_value - zero-point)
             outs_int8[i].convertTo(outs_dequantized[i], CV_32F, outputScale[i], -(outputScale[i] * outputZp[i]));
             normAssert(refs[i], outs_dequantized[i], "", l1, lInf);
         }
@@ -125,22 +128,22 @@ public:
 
 TEST_P(Test_Int8_layers, Convolution1D)
 {
-    testLayer("conv1d", "ONNX", 0.00385, 0.01003);
-    testLayer("conv1d_bias", "ONNX", 0.00325, 0.00948);
+    testLayer("conv1d", "ONNX", 0.00302, 0.00909);
+    testLayer("conv1d_bias", "ONNX", 0.00306, 0.00948);
 }
 
 TEST_P(Test_Int8_layers, Convolution2D)
 {
     testLayer("single_conv", "TensorFlow", 0.00413, 0.02201);
-    testLayer("convolution", "ONNX", 0.00530, 0.01516);
-    testLayer("two_convolution", "ONNX", 0.00333, 0.00978);
+    testLayer("convolution", "ONNX", 0.00513, 0.01516);
+    testLayer("two_convolution", "ONNX", 0.00295, 0.00840);
 }
 
 TEST_P(Test_Int8_layers, Convolution3D)
 {
-    testLayer("conv3d", "TensorFlow", 0.00777, 0.02274);
-    testLayer("conv3d", "ONNX", 0.00360, 0.01193);
-    testLayer("conv3d_bias", "ONNX", 0.00252, 0.00390);
+    testLayer("conv3d", "TensorFlow", 0.00742, 0.02434);
+    testLayer("conv3d", "ONNX", 0.00353, 0.00941);
+    testLayer("conv3d_bias", "ONNX", 0.00129, 0.00249);
 }
 
 // TODO : skip this test for all other backends except OpenCV/CPU.

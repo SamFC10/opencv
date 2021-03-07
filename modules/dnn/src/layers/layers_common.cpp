@@ -278,13 +278,7 @@ void getQuantizationParams(const Mat& src, float& scale, int& zeropoint, bool is
     double sc, zp;
     if( fix_zeropoint_to_zero )
     {
-        double sc1 = (realMin == 0.0) ? qmin : qmin/realMin;
-        double sc2 = (realMax == 0.0) ? qmax : qmax/realMax;
-
-        double rmin_adj = qmin/std::min(sc1, sc2);
-        double rmax_adj = qmax/std::min(sc1, sc2);
-
-        sc = (rmax_adj - rmin_adj)/(qmax - qmin);
+        sc = (realMax == realMin) ? 1.0 : std::max(std::abs(realMin), realMax)/qmax;
         zp = 0.0;
     }
     else

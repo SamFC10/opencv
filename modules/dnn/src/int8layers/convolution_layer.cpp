@@ -173,6 +173,9 @@ public:
     enum { VEC_ALIGN = 32, DFT_TYPE = CV_8S };
     Mat weightsMat;
     std::vector<int> biasvec;
+    // TODO : Deal with fused activation with convolution. For now activations which are just clamps,
+    //        like ReLU (without negative slope) and ReLU6 are fused in the Output stage. All the remaining activations
+    //        will need seperate fixed point arithmetic which hasn't been done yet.
     std::vector<float> reluslope;
     Ptr<ActivationLayer> activ;
 
@@ -253,7 +256,7 @@ public:
             int newcols = (int)alignSize(wm.step1(), VEC_ALIGN);
             Mat wm_buffer = Mat(numOutput, newcols, wm.type());
             Mat wm_padding = wm_buffer.colRange(wm.cols, newcols);
-            wm_padding.setTo(Scalar::all(0.));
+            wm_padding.setTo(Scalar::all(0));
             Mat wm_aligned = wm_buffer.colRange(0, wm.cols);
             wm.copyTo(wm_aligned);
             wm = wm_aligned;
@@ -1039,8 +1042,8 @@ public:
                                     s00 += offset0 + bias0;
                                     s10 += offset1 + bias1;
 
-                                    int mul_round0 = (s00*mult0 + (1 << 22)) >> 23;
-                                    int mul_round1 = (s10*mult1 + (1 << 22)) >> 23;
+                                    int mul_round0 = (s00*mult0 + (1 << 21)) >> 22;
+                                    int mul_round1 = (s10*mult1 + (1 << 21)) >> 22;
 
                                     int out0 = outZp + mul_round0;
                                     int out1 = outZp + mul_round1;
@@ -1098,6 +1101,7 @@ public:
                     outputs.size() == 1, inputs[0].data != outputs[0].data);
 
         int ngroups = inputs[0].size[1] / inpGroupCn;
+        CV_Assert(ngroups == 1); // TODO : Depthwise Convolution
         CV_Assert(outputs[0].size[1] % ngroups == 0);
 
         reluslope.clear();
