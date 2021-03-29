@@ -74,8 +74,7 @@ void getConvPoolOutParams(const std::vector<int>& inp, const std::vector<size_t>
                           const std::vector<size_t>& strides, const String &padMode,
                           std::vector<size_t>& pads_begin, std::vector<size_t>& pads_end);
 
-void getQuantizationParams(const Mat& src, float& scale, int& zeropoint, bool is_reference_data = true,
-                           bool fix_zeropoint_to_zero = false);
+void getQuantizationParams(const Mat& src, float& scale, int& zeropoint, bool fix_zeropoint_to_zero = false);
 }
 }
 

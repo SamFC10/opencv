@@ -2134,40 +2134,27 @@ public:
         References - https://arxiv.org/pdf/1712.05877.pdf
         */
 
-        Mat additionalParams(2, numOutput, CV_32S); // To store offsets and quantized multipliers for each filter.
-        int* params = additionalParams.ptr<int>();
         const int bits_precision = 23;
-
         MatShape weightShape = blobs.empty() ? shape(inputs[1]) : shape(blobs[0]);
-        Mat weights = blobs.empty() ? inputs[1].reshape(1, numOutput) : blobs[0].reshape(1, numOutput);
-        Mat weightsQuantized(weights.rows, weights.cols, CV_8S);
-        std::vector<float> weights_scale_vec;
+        Mat additionalParams(1, numOutput, CV_32S);
+        Mat weightsQuantized(weightsMat.rows, weightsMat.cols, CV_8S);
+        Mat biasQuantized(1, numOutput, CV_32S);
 
         for( int i = 0; i < numOutput; i++ )
         {
-            getQuantizationParams(weights.row(i), weightsScale, weightsZp, false, true);
-            weights_scale_vec.push_back(weightsScale);
-            weights.row(i).convertTo(weightsQuantized.row(i), CV_8S, 1.f/weightsScale);
+            getQuantizationParams(weightsMat.row(i), weightsScale, weightsZp, true);
+            weightsMat.row(i).convertTo(weightsQuantized.row(i), CV_8S, 1.f/weightsScale);
+
+            float biasScale = inputScale * weightsScale;
+            biasQuantized.at<int>(i) = (int)(biasvec[i]/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]); // fuse offset with bias
 
             float realMult = (inputScale * weightsScale)/outputScale;
-            params[i] = std::round(realMult * (1 << (bits_precision - 1))); // quantized multiplier
-            params[i + numOutput] = -inputZp*(cv::sum(weightsQuantized.row(i))[0]); // offset
+            additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1))); // quantized multiplier
         }
 
         quantizedBlobs.push_back(additionalParams);
         quantizedBlobs.push_back(weightsQuantized.reshape(1, weightShape));
-
-        if( hasBias() )
-        {
-            Mat bias = blobs[1].reshape(1, numOutput);
-            Mat biasQuantized(bias.rows, bias.cols, CV_32S);
-            for( int i = 0; i < numOutput; i++ )
-            {
-                float biasScale = inputScale*weights_scale_vec[i];
-                bias.row(i).convertTo(biasQuantized.row(i), CV_32S, 1.f/biasScale);
-            }
-            quantizedBlobs.push_back(biasQuantized);
-        }
+        quantizedBlobs.push_back(biasQuantized);
     }
 
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,

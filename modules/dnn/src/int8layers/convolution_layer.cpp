@@ -101,8 +101,8 @@ public:
 
         // blobs[0] - Additional quantization params for convolution
         // blobs[1] - Weights
-        // blobs[2] - (optional) Biases
-        CV_Assert(!inputs.empty() && (blobs.size() == 2 || blobs.size() == 3));
+        // blobs[2] - Biases
+        CV_Assert(!inputs.empty() && blobs.size() == 3);
         MatSize weightShape = blobs[1].size;
 
         CV_Assert(inputs[0].dims == outputs[0].dims);
@@ -145,11 +145,6 @@ public:
         fusedBias = false;
     }
 
-    bool hasBias() const
-    {
-        return blobs.size() == 3;
-    }
-
     virtual MatShape computeColRowShape(const MatShape &inpShape, const MatShape &outShape) const = 0;
     bool is1x1() const
     {
@@ -160,10 +155,12 @@ public:
 
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
     {
+        Ptr<BatchNormLayer> batchnorm_layer = top.dynamicCast<BatchNormLayer>();
+        if (batchnorm_layer)
+            return true;
+
         return false;
     }
-
-    virtual void fuseWeights(const Mat& w_, const Mat& b_) = 0;
 };
 
 //TODO: simultaneously convolution and bias addition for cache optimization
@@ -208,7 +205,7 @@ public:
     {
         CV_Assert(!blobs.empty());
         const int* weightShape = blobs[1].size.p;
-        CV_Assert(!hasBias() || blobs[2].total() == (size_t)weightShape[0]);
+        CV_Assert(blobs[2].total() == (size_t)weightShape[0]);
 
         internals.clear();
 
@@ -263,18 +260,10 @@ public:
         }
         weightsMat = wm;
 
-        Mat biasMat = hasBias() ? blobs[2].reshape(1, numOutput) : Mat();
+        Mat biasMat = blobs[2];
         biasvec.resize(numOutput+2);
-        if( biasMat.empty() )
-        {
-            for(int i = 0; i < numOutput; i++ )
-                biasvec[i] = 0;
-        }
-        else
-        {
-            for(int i = 0; i < numOutput; i++ )
-                biasvec[i] = biasMat.at<int>(i);
-        }
+        for(int i = 0; i < numOutput; i++ )
+            biasvec[i] = biasMat.at<int>(i);
     }
 
     bool setActivation(const Ptr<ActivationLayer>& layer) CV_OVERRIDE
@@ -292,14 +281,6 @@ public:
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
     {
         return BaseConvolutionLayerInt8Impl::tryFuse(top);
-    }
-
-    void fuseWeights(const Mat& w_, const Mat& b_) CV_OVERRIDE
-    {
-        // Convolution weights have OIHW data layout. Parameters fusion in case of
-        // (conv(I) + b1 ) * w + b2
-        // means to replace convolution's weights to [w*conv(I)] and bias to [b1 * w + b2]
-        // Not possible in quantized implementation for now
     }
 
     class ParallelConv : public cv::ParallelLoopBody
@@ -324,7 +305,6 @@ public:
         int blk_size_cn;
         int inpZp, outZp;
         const int* multiplier;
-        const int* offset;
 
         ParallelConv()
             : input_(0), weights_(0), output_(0), ngroups_(0), nstripes_(0),
@@ -404,7 +384,6 @@ public:
             p.inpZp = inp_Zp;
             p.outZp = out_Zp;
             p.multiplier = additionalParams.ptr<int>(0);
-            p.offset     = additionalParams.ptr<int>(1);
 
             p.ofstab_.resize(karea * ncn);
             int* ofstab = &p.ofstab_[0];
@@ -931,15 +910,15 @@ public:
                     #if CV_TRY_AVX512_SKX
                         if(useAVX512)
                             opt_AVX512_SKX::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
-                                          outShape, bsz, vsz, vsz_a, outZp, offset, multiplier,
-                                          relu, cn0 == 0, cn1 == inpCn);
+                                          outShape, bsz, vsz, vsz_a, outZp, multiplier, relu,
+                                          cn0 == 0, cn1 == inpCn);
                         else
                     #endif
                     #if CV_TRY_AVX2
                         if(useAVX2)
                             opt_AVX2::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
-                                          outShape, bsz, vsz, vsz_a, outZp, offset, multiplier,
-                                          relu, cn0 == 0, cn1 == inpCn);
+                                          outShape, bsz, vsz, vsz_a, outZp, multiplier, relu,
+                                          cn0 == 0, cn1 == inpCn);
                         else
                     #endif
                         for( int i = 0; i < outCn; i += 2 )
@@ -950,7 +929,6 @@ public:
                             int* outptr1 = outptr0 + outPlaneSize;
                             int bias0 = biasptr[i], bias1 = biasptr[i+1];
                             int mult0 = multiplier[i], mult1 = multiplier[i+1];
-                            int offset0 = offset[i], offset1 = offset[i+1];
 
                             if( i+1 >= outCn )
                             {
@@ -958,7 +936,6 @@ public:
                                 outptr1 = outptr0;
                                 bias1 = bias0;
                                 mult1 = mult0;
-                                offset1 = offset0;
                             }
                             int j = 0;
                         #if CV_SIMD128 || useAVX
@@ -969,8 +946,8 @@ public:
 
                                 if( cn0 == 0 )
                                 {
-                                    s0 = v_setzero_s32();
-                                    s1 = v_setzero_s32();
+                                    s0 = v_setall_s32(bias0);
+                                    s1 = v_setall_s32(bias1);
                                 }
                                 else
                                 {
@@ -1005,9 +982,6 @@ public:
                                 s1 += v_reduce_sum4(vs10, vs11, vs12, vs13);
                                 if( cn1 == inpCn )
                                 {
-                                    s0 += v_setall_s32(offset0 + bias0);
-                                    s1 += v_setall_s32(offset1 + bias1);
-
                                     s0 = v_outputStage(s0, v_setall_s32(mult0), outZp);
                                     s1 = v_outputStage(s1, v_setall_s32(mult1), outZp);
                                 }
@@ -1022,8 +996,8 @@ public:
 
                                 if( cn0 == 0 )
                                 {
-                                    s00 = 0;
-                                    s10 = 0;
+                                    s00 = bias0;
+                                    s10 = bias1;
                                 }
                                 else
                                 {
@@ -1039,9 +1013,6 @@ public:
                                 }
                                 if( cn1 == inpCn )
                                 {
-                                    s00 += offset0 + bias0;
-                                    s10 += offset1 + bias1;
-
                                     int mul_round0 = (s00*mult0 + (1 << 21)) >> 22;
                                     int mul_round1 = (s10*mult1 + (1 << 21)) >> 22;
 

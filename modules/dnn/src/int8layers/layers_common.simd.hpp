@@ -49,7 +49,7 @@ CV_CPU_OPTIMIZATION_NAMESPACE_BEGIN
 void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                const int8_t* rowbuf, int* output, const int* outShape,
                int blockSize, int vecsize, int vecsize_aligned, int outZp,
-               const int* offset, const int* multiplier, const float* relu,
+               const int* multiplier, const float* relu,
                bool initOutput, bool finalOutput );
 
 #if !defined(CV_CPU_OPTIMIZATION_DECLARATIONS_ONLY) && CV_AVX2
@@ -93,7 +93,7 @@ enum { FASCONV_BASE_VECSZ = 4 };
 void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                const int8_t* rowbuf, int* output, const int* outShape,
                int blockSize, int vecsize, int vecsize_aligned, int outZp,
-               const int* offset, const int* multiplier, const float* relu,
+               const int* multiplier, const float* relu,
                bool initOutput, bool finalOutput )
 {
     int outCn = outShape[1];
@@ -116,7 +116,6 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
         int* outptr2 = outptr1 + outPlaneSize;
         int bias0 = bias[i], bias1 = bias[i+1], bias2 = bias[i+2];
         int mult0 = multiplier[i], mult1 = multiplier[i+1], mult2 = multiplier[i+2];
-        int offset0 = offset[i], offset1 = offset[i+1], offset2 = offset[i+2];
 
         if( i+2 >= outCn )
         {
@@ -124,7 +123,6 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
             outptr2 = outptr1;
             bias2 = bias1;
             mult2 = mult1;
-            offset2 = offset1;
 
             if( i+1 >= outCn )
             {
@@ -132,7 +130,6 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                 outptr2 = outptr1 = outptr0;
                 bias2 = bias1 = bias0;
                 mult2 = mult1 = mult0;
-                offset2 = offset1 = offset0;
             }
         }
         int j = 0;
@@ -253,9 +250,9 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( initOutput )
             {
-                s0 = _mm_setzero_si128();
-                s1 = _mm_setzero_si128();
-                s2 = _mm_setzero_si128();
+                s0 = _mm_set1_epi32(bias0);
+                s1 = _mm_set1_epi32(bias1);
+                s2 = _mm_set1_epi32(bias2);
             }
             else
             {
@@ -270,10 +267,6 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( finalOutput )
             {
-                s0 = _mm_add_epi32(s0, _mm_set1_epi32(offset0 + bias0));
-                s1 = _mm_add_epi32(s1, _mm_set1_epi32(offset1 + bias1));
-                s2 = _mm_add_epi32(s2, _mm_set1_epi32(offset2 + bias2));
-
                 s0 =  OutputStage(s0, _mm_set1_epi32(mult0), outZp);
                 s1 =  OutputStage(s1, _mm_set1_epi32(mult1), outZp);
                 s2 =  OutputStage(s2, _mm_set1_epi32(mult2), outZp);
@@ -297,9 +290,9 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( initOutput )
             {
-                s00 = s01 = 0;
-                s10 = s11 = 0;
-                s20 = s21 = 0;
+                s00 = s01 = bias0;
+                s10 = s11 = bias1;
+                s20 = s21 = bias2;
             }
             else
             {
@@ -319,10 +312,6 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( finalOutput )
             {
-                s00 += offset0 + bias0; s01 += offset0 + bias0;
-                s10 += offset1 + bias1; s11 += offset1 + bias1;
-                s20 += offset2 + bias2; s21 += offset2 + bias2;
-
                 s00 = OutputStage(s00, mult0, outZp);
                 s01 = OutputStage(s01, mult0, outZp);
                 s10 = OutputStage(s10, mult1, outZp);
@@ -345,9 +334,9 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( initOutput )
             {
-                s00 = 0;
-                s10 = 0;
-                s20 = 0;
+                s00 = bias0;
+                s10 = bias1;
+                s20 = bias2;
             }
             else
             {
@@ -365,10 +354,6 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( finalOutput )
             {
-                s00 += offset0 + bias0; 
-                s10 += offset1 + bias1; 
-                s20 += offset2 + bias2;
-
                 s00 = OutputStage(s00, mult0, outZp);
                 s10 = OutputStage(s10, mult1, outZp);
                 s20 = OutputStage(s20, mult2, outZp);
