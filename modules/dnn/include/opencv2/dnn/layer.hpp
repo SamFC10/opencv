@@ -73,6 +73,9 @@ public:
      */
     static Ptr<Layer> createLayerInstance(const String &type, LayerParams& params);
 
+    //! Checks if layer with typename @p type is registered in LayerFactory
+    static bool hasLayerInstance(const String &type);
+
 private:
     LayerFactory();
 };

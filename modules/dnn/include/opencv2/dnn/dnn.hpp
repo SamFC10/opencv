@@ -452,13 +452,21 @@ CV__DNN_INLINE_NS_BEGIN
         /** @brief Adds new layer to the net.
          *  @param name   unique name of the adding layer.
          *  @param type   typename of the adding layer (type must be registered in LayerRegister).
+         *  @param dtype  datatype of output blobs.
          *  @param params parameters which will be used to initialize the creating layer.
          *  @returns unique identifier of created layer, or -1 if a failure will happen.
          */
+        int addLayer(const String &name, const String &type, const int &dtype, LayerParams &params);
+
+        /** @overload Datatype of output blobs set to default CV_32F */
         int addLayer(const String &name, const String &type, LayerParams &params);
+
         /** @brief Adds new layer and connects its first input to the first output of previously added layer.
          *  @see addLayer()
          */
+        int addLayerToPrev(const String &name, const String &type, const int &dtype, LayerParams &params);
+
+        /** @overload */
         int addLayerToPrev(const String &name, const String &type, LayerParams &params);
 
         /** @brief Converts string name of the layer to the integer identifier.
@@ -552,8 +560,10 @@ CV__DNN_INLINE_NS_BEGIN
 
         /** @brief Returns a quantized Net from a floating-point Net.
          *  @param refData contains reference data to compute the quantization parameters.
+         *  @param inputsDtype Datatype of quantized net's inputs. Can be CV_32F or CV_8S.
+         *  @param outputsDtype Datatype of quantized net's outputs. Can be CV_32F or CV_8S.
          */
-        CV_WRAP Net quantize(InputArrayOfArrays refData);
+        CV_WRAP Net quantize(InputArrayOfArrays refData, const int& inputsDtype, const int& outputsDtype);
 
         /** @brief Returns input scale and zeropoint for a quantized Net.
          *  @param scales output parameter for returning input scales.

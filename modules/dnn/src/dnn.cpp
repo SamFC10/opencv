@@ -559,8 +559,8 @@ struct LayerPin
 struct LayerData
 {
     LayerData() : id(-1), dtype(CV_32F), skip(false), flag(0) {}
-    LayerData(int _id, const String &_name, const String &_type, LayerParams &_params)
-        : id(_id), name(_name), type(_type), params(_params), dtype(CV_32F), skip(false), flag(0)
+    LayerData(int _id, const String &_name, const String &_type, const int &_dtype, LayerParams &_params)
+        : id(_id), name(_name), type(_type), dtype(_dtype), params(_params), skip(false), flag(0)
     {
         CV_TRACE_FUNCTION();
 
@@ -572,8 +572,8 @@ struct LayerData
     int id;
     String name;
     String type;
+    int dtype; // Datatype of output blobs.
     LayerParams params;
-    int dtype; // Datatype of input and output blobs
 
     std::vector<LayerPin> inputBlobsId;
     std::set<int> inputLayersId;
@@ -963,6 +963,7 @@ public:
             {
                 reuse(bestBlobPin, lp);
                 dst = bestBlob.reshape(1, 1).colRange(0, targetTotal).reshape(1, shape);
+                dst.convertTo(dst, dtype);
                 return;
             }
         }
@@ -2509,8 +2510,6 @@ struct Net::Impl : public detail::NetImplBase
 
         if (preferableBackend == DNN_BACKEND_OPENCV && preferableTarget == DNN_TARGET_OPENCL_FP16)
             ld.dtype = CV_16S;
-        else if (netWasQuantized)
-            ld.dtype = CV_8S;
 
         std::vector<LayerPin> pinsForInternalBlobs;
         blobManager.allocateBlobsForLayer(ld, layerShapesIt->second, pinsForInternalBlobs);
@@ -3434,15 +3433,18 @@ struct Net::Impl : public detail::NetImplBase
         if (ld.skip)
             return ld;
 
-        Ptr<Layer> layer = ld.layerInstance;
-        std::vector<std::vector<float> > scales(2);
-        std::vector<std::vector<int> > zeroPoints(2);
         std::vector<Mat> inps(ld.inputBlobs.size());
         for (int i = 0; i < ld.inputBlobs.size(); ++i)
         {
             inps[i] = *ld.inputBlobs[i];
         }
         layer->forward(inps, ld.outputBlobs, ld.internals);
+
+        if (!LayerFactory::hasLayerInstance(ld.type+"Int8"))
+            return ld;
+
+        std::vector<std::vector<float> > scales(2);
+        std::vector<std::vector<int> > zeroPoints(2);
         layer->quantize(inps, ld.outputBlobs, scales, zeroPoints);
 
         LayerParams qParams = ld.params;
@@ -3452,7 +3454,37 @@ struct Net::Impl : public detail::NetImplBase
         qParams.set("output_zeropoint", DictValue::arrayInt(zeroPoints[1].data(), zeroPoints[1].size()));
         qParams.blobs = layer->quantizedBlobs;
 
-        return LayerData(ld.id, ld.name, ld.type+"Int8", qParams);
+        return LayerData(ld.id, ld.name, ld.type+"Int8", CV_8S, qParams);
+    }
+
+    void setLayersOutputPrecision(const int& inputsDtype, const int& outputsDtype)
+    {
+        MapIdToLayerData::iterator it = layers.begin();
+        it->second.dtype = inputsDtype;
+        it++;
+        for( ; it != layers.end(); it++ )
+        {
+            LayerData &currLd = it->second;
+            for( int i = 0; i < currLd.inputBlobsId.size(); i++ )
+            {
+                LayerData &inpLd = getLayerData(currLd.inputBlobsId[i].lid);
+                if (inpLd.type == "ConvolutionInt8" && (currLd.type == "BatchNorm" || currLd.type == "ReLU"))
+                {
+                    LayerData &nextLd = layers[currLd.consumers[0].lid];
+                    if (nextLd.type == "ReLU")
+                    {
+                        LayerData &nextnextLd = layers[nextLd.consumers[0].lid];
+                        nextLd.dtype =  nextnextLd.dtype;
+                    }
+                    currLd.dtype = nextLd.dtype;
+                }
+
+                if (inpLd.dtype == CV_8S && currLd.dtype == CV_32F)
+                    inpLd.dtype = CV_32F;
+            }
+            if (currLd.requiredOutputs.size() == 0)
+                currLd.dtype = outputsDtype;
+        }
     }
 
     void getLayerShapesRecursively(int id, LayersShapesMap& inOutShapes)
@@ -4016,7 +4048,7 @@ Net::~Net()
 {
 }
 
-int Net::addLayer(const String &name, const String &type, LayerParams &params)
+int Net::addLayer(const String &name, const String &type, const int &dtype, LayerParams &params)
 {
     CV_TRACE_FUNCTION();
 
@@ -4028,21 +4060,33 @@ int Net::addLayer(const String &name, const String &type, LayerParams &params)
 
     int id = ++impl->lastLayerId;
     impl->layerNameToId.insert(std::make_pair(name, id));
-    impl->layers.insert(std::make_pair(id, LayerData(id, name, type, params)));
+    impl->layers.insert(std::make_pair(id, LayerData(id, name, type, dtype, params)));
     if (params.get<bool>("has_dynamic_shapes", false))
         impl->hasDynamicShapes = true;
 
     return id;
 }
 
-int Net::addLayerToPrev(const String &name, const String &type, LayerParams &params)
+int Net::addLayer(const String &name, const String &type, LayerParams &params)
+{
+    CV_TRACE_FUNCTION();
+    return addLayer(name, type, CV_32F, params);
+}
+
+int Net::addLayerToPrev(const String &name, const String &type, const int &dtype, LayerParams &params)
 {
     CV_TRACE_FUNCTION();
 
     int prvLid = impl->lastLayerId;
-    int newLid = this->addLayer(name, type, params);
+    int newLid = this->addLayer(name, type, dtype, params);
     this->connect(prvLid, 0, newLid, 0);
     return newLid;
+}
+
+int Net::addLayerToPrev(const String &name, const String &type, LayerParams &params)
+{
+    CV_TRACE_FUNCTION();
+    return addLayerToPrev(name, type, CV_32F, params);
 }
 
 void Net::connect(int outLayerId, int outNum, int inpLayerId, int inpNum)
@@ -4253,7 +4297,7 @@ void Net::forward(std::vector<std::vector<Mat> >& outputBlobs,
     }
 }
 
-Net Net::quantize(InputArrayOfArrays refData)
+Net Net::quantize(InputArrayOfArrays refData, const int& inputsDtype, const int& outputsDtype)
 {
     CV_TRACE_FUNCTION();
 
@@ -4303,13 +4347,14 @@ Net Net::quantize(InputArrayOfArrays refData)
         LayerData qld = impl->quantizeLayer(ld);
 
         // Add quantized layer to Net and connect to its inputs.
-        int newLid = dstNet.addLayer(qld.name, qld.type, qld.params);
+        int newLid = dstNet.addLayer(qld.name, qld.type, qld.dtype, qld.params);
         for( int i = 0; i < ld.inputBlobsId.size(); i++ )
         {
             LayerPin &pin = ld.inputBlobsId[i];
             dstNet.connect(pin.lid, pin.oid, newLid, i);
         }
     }
+    dstNet.impl->setLayersOutputPrecision(inputsDtype, outputsDtype);
     dstNet.impl->netWasQuantized = true;
     return dstNet;
 }
@@ -5572,6 +5617,17 @@ Ptr<Layer> LayerFactory::createLayerInstance(const String &type, LayerParams& pa
         return Ptr<Layer>(); //NULL
     }
 }
+
+bool LayerFactory::hasLayerInstance(const String &type)
+{
+    CV_TRACE_FUNCTION();
+    CV_TRACE_ARG_VALUE(type, "type", type.c_str());
+
+    cv::AutoLock lock(getLayerFactoryMutex());
+    LayerFactory_Impl::const_iterator it = getLayerFactoryImpl().find(type);
+    return it != getLayerFactoryImpl().end();
+}
+
 
 BackendNode::BackendNode(int backendId) : backendId(backendId) {}
 

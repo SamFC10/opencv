@@ -103,7 +103,7 @@ public:
         for (int i = 0; i < numOuts; i++)
             refs[i] = blobFromNPY(outPath + ((numOuts > 1) ? cv::format("_%d.npy", i) : ".npy"));
 
-        qnet = net.quantize(inps);
+        qnet = net.quantize(inps, CV_8S, CV_8S);
         qnet.getInputDetails(inputScale, inputZp);
         qnet.getOutputDetails(outputScale, outputZp);
 

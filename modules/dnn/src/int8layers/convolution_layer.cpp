@@ -68,7 +68,9 @@ public:
         int ngroups = params.get<int>("group", 1);
         CV_Assert(numOutput % ngroups == 0);
 
+        input_sc = params.get<float>("input_scale");
         input_zp = params.get<int>("input_zeropoint");
+        output_sc = params.get<float>("output_scale");
         output_zp = params.get<int>("output_zeropoint");
 
         if (kernel_size.size() == 2) {
@@ -117,7 +119,7 @@ public:
         }
 
         const Mat &input = inputs[0];
-        CV_Assert(((input.dims == 3 && kernel_size.size() == 1) || input.dims == 4 || input.dims == 5) && (input.type() == CV_8S));
+        CV_Assert(((input.dims == 3 && kernel_size.size() == 1) || input.dims == 4 || input.dims == 5) && (input.type() == CV_8S || input.type() == CV_32F));
         for (size_t i = 0; i < outputs.size(); i++)
         {
             CV_Assert(inputs[i].type() == input.type());
@@ -1053,6 +1055,10 @@ public:
         inputs_arr.getMatVector(inputs);
         outputs_arr.getMatVector(outputs);
 
+        // Quantize FP32 inputs to int8
+        if (inputs[0].type() == CV_32F)
+            inputs[0].convertTo(inputs[0], CV_8S, 1.f/input_sc, input_zp);
+
         /*if (inputs[0].dims > 3) {
             printf("conv %s: input (%d x %d x %d x %d), kernel (%d x %d), pad (%d x %d), stride (%d x %d), dilation (%d x %d)\n",
                    name.c_str(), inputs[0].size[0], inputs[0].size[1], inputs[0].size[2], inputs[0].size[3],
@@ -1096,11 +1102,17 @@ public:
             }
         }
         int nstripes = std::max(getNumThreads(), 1);
-
         Mat output_int32 = Mat(shape(outputs[0]), CV_32S);
+
         ParallelConv::run(inputs[0], output_int32, weightsMat, blobs[0], biasvec, reluslope, kernel_size, strides,
                           pads_begin, pads_end, dilations, activ.get(), ngroups, nstripes, input_zp, output_zp);
-        output_int32.convertTo(outputs[0], CV_8S);
+
+        // Dequantize outputs to FP32 or typecast outputs to int8.
+        if (outputs[0].type() == CV_32F)
+            output_int32.convertTo(outputs[0], CV_32F, output_sc, -(output_sc * output_zp));
+        else
+            output_int32.convertTo(outputs[0], CV_8S);
+
 #if CV_SSE3
         _MM_SET_FLUSH_ZERO_MODE(ftzMode);
         _MM_SET_DENORMALS_ZERO_MODE(dazMode);
