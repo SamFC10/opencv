@@ -134,9 +134,9 @@ TEST_P(Test_Int8_layers, Convolution1D)
 
 TEST_P(Test_Int8_layers, Convolution2D)
 {
-    testLayer("single_conv", "TensorFlow", 0.00413, 0.02201);
-    testLayer("convolution", "ONNX", 0.00513, 0.01516);
-    testLayer("two_convolution", "ONNX", 0.00295, 0.00840);
+    testLayer("single_conv", "TensorFlow", 0.004, 0.02201);
+    testLayer("convolution", "ONNX", 0.0052, 0.01516);
+    testLayer("two_convolution", "ONNX", 0.00294, 0.00840);
 }
 
 TEST_P(Test_Int8_layers, Convolution3D)

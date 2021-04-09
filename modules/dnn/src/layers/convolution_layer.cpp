@@ -2125,7 +2125,7 @@ public:
 
         This is where our implementation slightly differs from the paper chosen as reference. The paper suggests to use 32 bits of precision
         for the quantized_multiplier. This means the quantized_multiplier and int32_value have to be type-casted to int64, multiplied and then
-        type caste back to int32. This causes a significant overhead for a simple multiplication. Instead we reduce the bits precision of
+        type cast back to int32. This causes a significant overhead for a simple multiplication. Instead we reduce the bits precision of
         the quantized multiplier such that there is no possibility of overflow and the multiplication can be done without type-casting to int64.
         We chose 23 as the bits precision for the quantized multiplier as that was the maximum value which ensured there was no overflow.
         The improvement in mean absolute error by using 32 bits of precision was in the range of 1e-4 to 1e-5, so there is not much advantage

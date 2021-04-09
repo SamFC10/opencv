@@ -962,8 +962,7 @@ public:
             if (!bestBlob.empty())
             {
                 reuse(bestBlobPin, lp);
-                dst = bestBlob.reshape(1, 1).colRange(0, targetTotal).reshape(1, shape);
-                dst.convertTo(dst, dtype);
+                bestBlob.reshape(1, 1).colRange(0, targetTotal).reshape(1, shape).convertTo(dst, dtype);
                 return;
             }
         }
@@ -3433,6 +3432,7 @@ struct Net::Impl : public detail::NetImplBase
         if (ld.skip)
             return ld;
 
+        Ptr<Layer> layer = ld.layerInstance;
         std::vector<Mat> inps(ld.inputBlobs.size());
         for (int i = 0; i < ld.inputBlobs.size(); ++i)
         {
@@ -3465,10 +3465,12 @@ struct Net::Impl : public detail::NetImplBase
         for( ; it != layers.end(); it++ )
         {
             LayerData &currLd = it->second;
+            if (currLd.requiredOutputs.size() == 0)
+                currLd.dtype = outputsDtype;
             for( int i = 0; i < currLd.inputBlobsId.size(); i++ )
             {
                 LayerData &inpLd = getLayerData(currLd.inputBlobsId[i].lid);
-                if (inpLd.type == "ConvolutionInt8" && (currLd.type == "BatchNorm" || currLd.type == "ReLU"))
+                if (inpLd.type == "ConvolutionInt8" && (currLd.type == "BatchNorm" || currLd.type == "ReLU") && currLd.consumers.size() == 1)
                 {
                     LayerData &nextLd = layers[currLd.consumers[0].lid];
                     if (nextLd.type == "ReLU")
@@ -3482,8 +3484,6 @@ struct Net::Impl : public detail::NetImplBase
                 if (inpLd.dtype == CV_8S && currLd.dtype == CV_32F)
                     inpLd.dtype = CV_32F;
             }
-            if (currLd.requiredOutputs.size() == 0)
-                currLd.dtype = outputsDtype;
         }
     }
 
@@ -5627,7 +5627,6 @@ bool LayerFactory::hasLayerInstance(const String &type)
     LayerFactory_Impl::const_iterator it = getLayerFactoryImpl().find(type);
     return it != getLayerFactoryImpl().end();
 }
-
 
 BackendNode::BackendNode(int backendId) : backendId(backendId) {}
 
