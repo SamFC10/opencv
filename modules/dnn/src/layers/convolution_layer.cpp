@@ -2065,22 +2065,9 @@ public:
     }
 #endif
 
-    virtual void quantize(InputArrayOfArrays inputs_arr, InputArrayOfArrays outputs_arr,
-                          std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeroPoints) CV_OVERRIDE
+    virtual void quantize(const std::vector<std::vector<float> > &scales,
+                          const std::vector<std::vector<int> > &zeroPoints) CV_OVERRIDE
     {
-        std::vector<Mat> inputs, outputs;
-        inputs_arr.getMatVector(inputs);
-        outputs_arr.getMatVector(outputs);
-
-        float inputScale, outputScale, weightsScale;
-        int inputZp, outputZp, weightsZp;
-        getQuantizationParams(inputs[0], inputScale, inputZp);
-        getQuantizationParams(outputs[0], outputScale, outputZp);
-        scales[0].push_back(inputScale);
-        scales[1].push_back(outputScale);
-        zeroPoints[0].push_back(inputZp);
-        zeroPoints[1].push_back(outputZp);
-
         /*
         Convolution is done by transforming the inputs using the im2row method, and then a dot-product with the weights.
         A single output value Y is obtained by a dot-product of one row of inputs X with weights W and adding bias B to it, i.e.
@@ -2135,25 +2122,32 @@ public:
         */
 
         const int bits_precision = 23;
-        MatShape weightShape = blobs.empty() ? shape(inputs[1]) : shape(blobs[0]);
         Mat additionalParams(1, numOutput, CV_32S);
         Mat weightsQuantized(weightsMat.rows, weightsMat.cols, CV_8S);
         Mat biasQuantized(1, numOutput, CV_32S);
+        double realMin, realMax, weightsScale;
 
         for( int i = 0; i < numOutput; i++ )
         {
-            getQuantizationParams(weightsMat.row(i), weightsScale, weightsZp, true);
+            // Quantize weights
+            cv::minMaxIdx(weightsMat.row(i), &realMin, &realMax);
+            realMin = std::min(realMin, 0.0);
+            realMax = std::max(realMax, 0.0);
+            weightsScale = (realMax == realMin) ? 1.0 : std::max(std::abs(realMin), realMax)/127;
             weightsMat.row(i).convertTo(weightsQuantized.row(i), CV_8S, 1.f/weightsScale);
 
-            float biasScale = inputScale * weightsScale;
-            biasQuantized.at<int>(i) = (int)(biasvec[i]/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]); // fuse offset with bias
+            // Quantize biases
+            float biasScale = scales[0][0] * weightsScale;
+            biasQuantized.at<int>(i) = (int)(biasvec[i]/biasScale) - zeroPoints[0][0]*(cv::sum(weightsQuantized.row(i))[0]);
 
-            float realMult = (inputScale * weightsScale)/outputScale;
-            additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1))); // quantized multiplier
+            // Compute and store quantized multiplier
+            float realMult = (scales[0][0] * weightsScale)/scales[1][0];
+            additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1)));
         }
 
+        quantizedBlobs.clear();
         quantizedBlobs.push_back(additionalParams);
-        quantizedBlobs.push_back(weightsQuantized.reshape(1, weightShape));
+        quantizedBlobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
         quantizedBlobs.push_back(biasQuantized);
     }
 

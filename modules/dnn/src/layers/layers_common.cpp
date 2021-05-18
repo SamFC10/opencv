@@ -250,31 +250,5 @@ void getConvPoolPaddings(const std::vector<int>& inp, const std::vector<size_t>&
     }
 }
 
-void getQuantizationParams(const Mat& src, float& scale, int& zeropoint, bool fix_zeropoint_to_zero /* = false */)
-{
-    const int qmin = -128; // INT8_MIN
-    const int qmax = 127;  // INT8_MAX
-
-    double realMin, realMax;
-    cv::minMaxIdx(src, &realMin, &realMax);
-
-    realMin = std::min(realMin, 0.0);
-    realMax = std::max(realMax, 0.0);
-
-    double sc, zp;
-    if( fix_zeropoint_to_zero )
-    {
-        sc = (realMax == realMin) ? 1.0 : std::max(std::abs(realMin), realMax)/qmax;
-        zp = 0.0;
-    }
-    else
-    {
-        sc = (realMax == realMin) ? 1.0 : (realMax - realMin)/(qmax - qmin);
-        zp = qmin - (realMin/sc);
-    }
-    scale = (float)sc;
-    zeropoint = (int)std::round(zp);
-}
-
 }
 }

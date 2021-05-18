@@ -3425,6 +3425,29 @@ struct Net::Impl : public detail::NetImplBase
 #endif
     }
 
+    void getQuantizationParams(InputArrayOfArrays src_arr, std::vector<float>& scales, std::vector<int>& zeropoints)
+    {
+        const int qmin = -128; // INT8_MIN
+        const int qmax = 127;  // INT8_MAX
+        double realMin, realMax, sc, zp;
+
+        std::vector<Mat> src;
+        src_arr.getMatVector(src);
+        for (int i = 0; i < src.size(); ++i)
+        {
+            cv::minMaxIdx(src[i], &realMin, &realMax);
+
+            realMin = std::min(realMin, 0.0);
+            realMax = std::max(realMax, 0.0);
+
+            sc = (realMax == realMin) ? 1.0 : (realMax - realMin)/(qmax - qmin);
+            zp = qmin - (realMin/sc);
+
+            scales.push_back((float)sc);
+            zeropoints.push_back((int)std::round(zp));
+        }
+    }
+
     LayerData quantizeLayer(LayerData &ld)
     {
         CV_TRACE_FUNCTION();
@@ -3445,7 +3468,9 @@ struct Net::Impl : public detail::NetImplBase
 
         std::vector<std::vector<float> > scales(2);
         std::vector<std::vector<int> > zeroPoints(2);
-        layer->quantize(inps, ld.outputBlobs, scales, zeroPoints);
+        getQuantizationParams(inps, scales[0], zeroPoints[0]);
+        getQuantizationParams(ld.outputBlobs, scales[1], zeroPoints[1]);
+        layer->quantize(scales, zeroPoints);
 
         LayerParams qParams = ld.params;
         qParams.set("input_scale", DictValue::arrayReal(scales[0].data(), scales[0].size()));
@@ -5502,14 +5527,9 @@ void Layer::run(const std::vector<Mat> &inputs, std::vector<Mat> &outputs, std::
     this->forward(inputs, outputs, internals);
 }
 
-void Layer::quantize(InputArrayOfArrays inputs_arr, InputArrayOfArrays outputs_arr,
-                     std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeroPoints)
+void Layer::quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints)
 {
-    std::vector<Mat> inputs, outputs;
-    inputs_arr.getMatVector(inputs);
-    outputs_arr.getMatVector(outputs);
-
-    this->quantize(inputs, outputs, scales, zeroPoints);
+    this->quantize(scales, zeroPoints);
 }
 
 Layer::~Layer() {}

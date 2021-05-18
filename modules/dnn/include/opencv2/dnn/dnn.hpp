@@ -225,14 +225,11 @@ CV__DNN_INLINE_NS_BEGIN
          */
         virtual void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs, OutputArrayOfArrays internals);
 
-        /** @brief Given the @p input and @p output blobs, computes the scales and zero-points.
-         *  @param[in]  inputs  input blobs
-         *  @param[in]  outputs output blobs computed by forward()
-         *  @param[out] scales  stores input and output scales for quantization
-         *  @param[out] zeroPoints stores input and output zero-points for quantization
+        /** @brief Given the scales and zeropoints, compute the quantization parameters required for fixed point implementation.
+         *  @param[in] scales input and output scales
+         *  @param[in] zeroPoints input and output zeropoints
          */
-        virtual void quantize(InputArrayOfArrays inputs, InputArrayOfArrays outputs,
-                              std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeroPoints);
+        virtual void quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints);
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  inputs  the input blobs.
