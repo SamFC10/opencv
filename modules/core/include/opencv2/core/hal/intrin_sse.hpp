@@ -3408,6 +3408,20 @@ inline v_float32x4 v_broadcast_element(const v_float32x4& v)
 }
 
 ////////////// Quantization ///////////////////////////
+inline void v_expand_mul_add(const v_int8x16& a, const v_int8x16& b,
+                             v_int32x4& out0, v_int32x4& out1, v_int32x4& out2, v_int32x4& out3)
+{
+    v_int16x8 a0, a1, b0, b1;
+    v_expand(a, a0, a1);
+    v_expand(b, b0, b1);
+
+    v_int32x4 t0, t1;
+    v_mul_expand(a0, b0, t0, t1);
+    out0 += t0; out1 += t1;
+
+    v_mul_expand(a1, b1, t0, t1);
+    out2 += t0; out3 += t1;
+}
 inline v_int32x4 v_outputStage(const v_int32x4& accum, const v_int32x4& multiplier,
                                const int& outZp)
 {

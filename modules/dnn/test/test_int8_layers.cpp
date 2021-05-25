@@ -134,9 +134,14 @@ TEST_P(Test_Int8_layers, Convolution1D)
 
 TEST_P(Test_Int8_layers, Convolution2D)
 {
+    testLayer("layer_convolution", "Caffe", 0.0174, 0.0758, 1, 1, true);
     testLayer("single_conv", "TensorFlow", 0.004, 0.02201);
+    testLayer("depthwise_conv2d", "TensorFlow", 0.0388, 0.169);
+    testLayer("atrous_conv2d_valid", "TensorFlow", 0.0193, 0.0633);
+    testLayer("atrous_conv2d_same", "TensorFlow", 0.0185, 0.1322);
+    testLayer("keras_atrous_conv2d_same", "TensorFlow", 0.0056, 0.0244);
     testLayer("convolution", "ONNX", 0.0052, 0.01516);
-    testLayer("two_convolution", "ONNX", 0.00294, 0.00840);
+    testLayer("two_convolution", "ONNX", 0.00295, 0.00840);
 }
 
 TEST_P(Test_Int8_layers, Convolution3D)

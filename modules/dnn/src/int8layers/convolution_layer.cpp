@@ -58,7 +58,6 @@ namespace dnn
 class BaseConvolutionLayerInt8Impl : public ConvolutionLayerInt8
 {
 public:
-    bool fusedWeights, fusedBias;
     BaseConvolutionLayerInt8Impl(const LayerParams &params)
     {
         setParamsFrom(params);
@@ -90,9 +89,6 @@ public:
         for (int i = 0; i < adjust_pads.size(); i++) {
             CV_Assert(adjust_pads[i] < strides[i]);
         }
-
-        fusedWeights = false;
-        fusedBias = false;
     }
 
     virtual void finalize(InputArrayOfArrays inputs_arr, OutputArrayOfArrays outputs_arr) CV_OVERRIDE
@@ -101,17 +97,20 @@ public:
         inputs_arr.getMatVector(inputs);
         outputs_arr.getMatVector(outputs);
 
-        // blobs[0] - Additional quantization params for convolution
-        // blobs[1] - Weights
-        // blobs[2] - Biases
+        // blobs[0] - Weights
+        // blobs[1] - Biases
+        // blobs[2] - Multipliers for convolution output stage
         CV_Assert(!inputs.empty() && blobs.size() == 3);
-        MatSize weightShape = blobs[1].size;
+        MatSize weightShape = blobs[0].size;
 
         CV_Assert(inputs[0].dims == outputs[0].dims);
         if (weightShape.dims() == 3)
         {
             kernel_size.assign(1, kernel_size[0]);
             strides.assign(1, strides[0]);
+            dilations.assign(1, dilations[0]);
+            pads_begin.assign(1, pads_begin[0]);
+            pads_end.assign(1, pads_end[0]);
         }
         CV_Assert(weightShape.dims() == kernel_size.size() + 2);
         for (int i = 0; i < kernel_size.size(); i++) {
@@ -157,6 +156,7 @@ public:
 
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
     {
+        // BatchNorm Layer can be fused as its weights are already fused and quantized with convolution layer's weights.
         Ptr<BatchNormLayer> batchnorm_layer = top.dynamicCast<BatchNormLayer>();
         if (batchnorm_layer)
             return true;
@@ -172,9 +172,6 @@ public:
     enum { VEC_ALIGN = 32, DFT_TYPE = CV_8S };
     Mat weightsMat;
     std::vector<int> biasvec;
-    // TODO : Deal with fused activation with convolution. For now activations which are just clamps,
-    //        like ReLU (without negative slope) and ReLU6 are fused in the Output stage. All the remaining activations
-    //        will need seperate fixed point arithmetic which hasn't been done yet.
     std::vector<float> reluslope;
     Ptr<ActivationLayer> activ;
 
@@ -187,7 +184,7 @@ public:
         int inpD = dims == 5 ? inpShape[2] : 1;
         int inpH = inpShape[dims - 2];
         int inpW = inpShape.back();
-        int inpGroupCn = blobs[1].size[1];
+        int inpGroupCn = blobs[0].size[1];
         int ksize = inpGroupCn * std::accumulate(kernel_size.begin(), kernel_size.end(),
                                                  1, std::multiplies<size_t>());
         return shape(inpD * inpH * inpW, ksize);
@@ -206,8 +203,8 @@ public:
                          std::vector<MatShape> &internals) const CV_OVERRIDE
     {
         CV_Assert(!blobs.empty());
-        const int* weightShape = blobs[1].size.p;
-        CV_Assert(blobs[2].total() == (size_t)weightShape[0]);
+        const int* weightShape = blobs[0].size.p;
+        CV_Assert(blobs[1].total() == (size_t)weightShape[0]);
 
         internals.clear();
 
@@ -249,7 +246,7 @@ public:
         inputs_arr.getMatVector(inputs);
         // prepare weightsMat where each row is aligned and has enough zero padding on the right to
         // use vectorized (i.e. with intrinsics) loops without tail processing
-        Mat wm = blobs[1].reshape(1, numOutput);
+        Mat wm = blobs[0].reshape(1, numOutput);
         if( wm.step1() % VEC_ALIGN != 0 )
         {
             int newcols = (int)alignSize(wm.step1(), VEC_ALIGN);
@@ -262,12 +259,15 @@ public:
         }
         weightsMat = wm;
 
-        Mat biasMat = blobs[2];
+        Mat biasMat = blobs[1];
         biasvec.resize(numOutput+2);
         for(int i = 0; i < numOutput; i++ )
             biasvec[i] = biasMat.at<int>(i);
+        biasvec[numOutput] = biasvec[numOutput+1] = biasvec[numOutput-1];
     }
 
+    // TODO : For now, leaving this function as it is. Once int8 activation layers are implemented, modify this function to fuse
+    //        activations with convolution layer.
     bool setActivation(const Ptr<ActivationLayer>& layer) CV_OVERRIDE
     {
         if ((!activ.empty() && !layer.empty()) || blobs.empty())
@@ -311,7 +311,7 @@ public:
         ParallelConv()
             : input_(0), weights_(0), output_(0), ngroups_(0), nstripes_(0),
               biasvec_(0), reluslope_(0), activ_(0), is1x1_(false), useAVX(false), useAVX2(false), useAVX512(false)
-            , blk_size_cn(0)
+            , blk_size_cn(0), inpZp(0), outZp(0), multiplier(0)
         {}
 
         static void run( const Mat& input, Mat& output, const Mat& weights, const Mat& additionalParams,
@@ -532,6 +532,7 @@ public:
                 int startOutCn = (subsampleIdx % ngroups)*outCn;
                 const int8_t* wptr_orig = wptr_orig_ + wstep*startOutCn;
                 const int* biasptr = biasptr_ + startOutCn;
+                const int* multptr = multiplier + startOutCn;
 
                 for( int cn0 = 0; cn0 < inpCn; cn0 += blk_size_cn )
                 {
@@ -551,77 +552,73 @@ public:
                         int out_i = (ofs0 - out_d * outH * outW) / outW;
                         int out_j = ofs0 % outW;
 
-                        // TODO: Depth-Wise Convolution
-                        /*if (depthWiseConvolution)
+                        if (depthWiseConvolution)
                         {
                             CV_Assert(out_i == 0 && out_j == 0);
                             int in_d = out_d * stride_d - pad_d;
-                            const float* inptr_ = data_inp0 + (cn0*depth*height + in_d*height)*width;
-                            float* outptr_ = data_out0 + ofs0;
+                            const int8_t* inptr_ = data_inp0 + (cn0*depth*height + in_d*height)*width;
+                            int* outptr_ = data_out0 + ofs0;
 
                         #if CV_TRY_AVX2
                             if(useAVX2)
                                 opt_AVX2::fastDepthwiseConv(wptr, kernel_h, kernel_w,
                                     stride_h, stride_w, dilation_h, dilation_w, pad_t, pad_l,
-                                    biasptr, relu, inptr_, height, width, outptr_, out_d, outH, outW);
-                            else
-                        #endif
-                        #if CV_TRY_AVX
-                            if(useAVX)
-                                opt_AVX::fastDepthwiseConv(wptr, kernel_h, kernel_w,
-                                    stride_h, stride_w, dilation_h, dilation_w, pad_t, pad_l,
-                                    biasptr, relu, inptr_, height, width, outptr_, out_d, outH, outW);
+                                    biasptr, multptr, inptr_, height, width, outptr_, out_d, outH, outW, inpZp, outZp);
                             else
                         #endif
                             {
-                                const float w00_ = wptr[0], w01_ = wptr[1], w02_ = wptr[2],
-                                            w10 = wptr[3], w11 = wptr[4], w12 = wptr[5],
-                                            w20_ = wptr[6], w21_ = wptr[7], w22_ = wptr[8];
+                                const int8_t w00_ = wptr[0], w01_ = wptr[1], w02_ = wptr[2],
+                                             w10 = wptr[3], w11 = wptr[4], w12 = wptr[5],
+                                             w20_ = wptr[6], w21_ = wptr[7], w22_ = wptr[8];
                                 int outW1 = min(outW, (width - dilation_w*(kernel_w - 1) + pad_l)/stride_w);
-                                float relu_coeff = relu ? relu[out_d] : 1.f, bias = biasptr[out_d];
+                                int bias = biasptr[out_d], mult = multptr[out_d];
+                                int biasCopy;
 
                                 for (int out_i = 0; out_i < outH; out_i++)
                                 {
                                     int in_i = out_i * stride_h - pad_t, out_j = 0;
-                                    const float* imgptr0 = inptr_ + in_i*width;
-                                    const float* imgptr1 = imgptr0 + dilation_h*width;
-                                    const float* imgptr2 = imgptr0 + (dilation_h*2)*width;
-                                    float out, w00 = w00_, w01 = w01_, w02 = w02_;
-                                    float w20 = w20_, w21 = w21_, w22 = w22_;
+                                    const int8_t* imgptr0 = inptr_ + in_i*width;
+                                    const int8_t* imgptr1 = imgptr0 + dilation_h*width;
+                                    const int8_t* imgptr2 = imgptr0 + (dilation_h*2)*width;
+                                    int8_t w00 = w00_, w01 = w01_, w02 = w02_;
+                                    int8_t w20 = w20_, w21 = w21_, w22 = w22_;
+                                    int out, out1;
+                                    // Bias has a fused offset component. bias = bias_quantized - input_zeropoint*sum_of_weights.
+                                    // In some cases below, certain weights are not used for convolution or set to zero.
+                                    // So we create a copy of bias at the start and remove the weight's components as necessary.
+                                    biasCopy = bias;
+
                                     if (in_i < 0)
                                     {
-                                        w00 = w01 = w02 = 0.f;
+                                        biasCopy += inpZp * (w00 + w01 + w02);
+                                        w00 = w01 = w02 = 0;
                                         imgptr0 = imgptr1;
                                     }
                                     else if (in_i + dilation_h*(kernel_h-1) >= height)
                                     {
-                                        w20 = w21 = w22 = 0.f;
+                                        biasCopy += inpZp * (w20 + w21 + w22);
+                                        w20 = w21 = w22 = 0;
                                         imgptr2 = imgptr1;
                                     }
-                                    float* outptr = outptr_ + out_i*outW;
+                                    int* outptr = outptr_ + out_i*outW;
                                     if (pad_l > 0)
                                     {
-                                        out = imgptr0[0]*w01 + imgptr0[dilation_w]*w02 +
-                                              imgptr1[0]*w11 + imgptr1[dilation_w]*w12 +
-                                              imgptr2[0]*w21 + imgptr2[dilation_w]*w22 + bias;
-                                        if (relu)
-                                            out = out > 0.f ? out : out*relu_coeff;
-                                        outptr[0] = out;
+                                        out = (int)imgptr0[0]*w01 + (int)imgptr0[dilation_w]*w02 +
+                                              (int)imgptr1[0]*w11 + (int)imgptr1[dilation_w]*w12 +
+                                              (int)imgptr2[0]*w21 + (int)imgptr2[dilation_w]*w22 +
+                                              biasCopy + inpZp*(w00 + w10 + w20);
+                                        out1 = outZp + ((out*mult + (1 << 21)) >> 22);
+                                        outptr[0] = std::min(std::max(out1, -128), 127);
                                         out_j = 1;
                                     }
-
-                                #if CV_SIMD
-                                    // maybe with AVX or AVX512 strided depthwise convolution
-                                    // can be accelerated with vector code, but with 4xfloat vectors
-                                    // it's hardly the case
+                                #if CV_SIMD || useAVX
                                     if( stride_w == 1 )
                                     {
-                                        const int VECSZ = v_float32::nlanes;
-                                        const int out_delta = VECSZ/stride_w;
-                                        v_float32 vw00 = vx_setall_f32(w00), vw01 = vx_setall_f32(w01), vw02 = vx_setall_f32(w02),
-                                                  vw10 = vx_setall_f32(w10), vw11 = vx_setall_f32(w11), vw12 = vx_setall_f32(w12),
-                                                  vw20 = vx_setall_f32(w20), vw21 = vx_setall_f32(w21), vw22 = vx_setall_f32(w22);
-                                        v_float32 z = vx_setzero_f32(), vbias = vx_setall_f32(bias), vrc = vx_setall_f32(relu_coeff);
+                                        const int out_delta = 16;
+                                        v_int8x16 vw00 = v_setall_s8(w00), vw01 = v_setall_s8(w01), vw02 = v_setall_s8(w02),
+                                                  vw10 = v_setall_s8(w10), vw11 = v_setall_s8(w11), vw12 = v_setall_s8(w12),
+                                                  vw20 = v_setall_s8(w20), vw21 = v_setall_s8(w21), vw22 = v_setall_s8(w22);
+                                        v_int32x4 vout0, vout1, vout2, vout3, vbias = v_setall_s32(biasCopy), vmult = v_setall_s32(mult);
                                         for( ; out_j < outW1; out_j += out_delta )
                                         {
                                             if (out_j + out_delta > outW1)
@@ -631,66 +628,76 @@ public:
                                                 out_j = outW1 - out_delta;
                                             }
                                             int in_j = out_j * stride_w - pad_l;
-                                            v_float32 v00 = vx_load(imgptr0 + in_j),
-                                                      v01 = vx_load(imgptr0 + in_j + dilation_w),
-                                                      v02 = vx_load(imgptr0 + in_j + dilation_w*2),
-                                                      v10 = vx_load(imgptr1 + in_j),
-                                                      v11 = vx_load(imgptr1 + in_j + dilation_w),
-                                                      v12 = vx_load(imgptr1 + in_j + dilation_w*2),
-                                                      v20 = vx_load(imgptr2 + in_j),
-                                                      v21 = vx_load(imgptr2 + in_j + dilation_w),
-                                                      v22 = vx_load(imgptr2 + in_j + dilation_w*2);
+                                            v_int8x16 v00 = v_load(imgptr0 + in_j),
+                                                      v01 = v_load(imgptr0 + in_j + dilation_w),
+                                                      v02 = v_load(imgptr0 + in_j + dilation_w*2),
+                                                      v10 = v_load(imgptr1 + in_j),
+                                                      v11 = v_load(imgptr1 + in_j + dilation_w),
+                                                      v12 = v_load(imgptr1 + in_j + dilation_w*2),
+                                                      v20 = v_load(imgptr2 + in_j),
+                                                      v21 = v_load(imgptr2 + in_j + dilation_w),
+                                                      v22 = v_load(imgptr2 + in_j + dilation_w*2);
 
-                                            v_float32 vout = v00*vw00 + v01*vw01 + v02*vw02 +
-                                                             v10*vw10 + v11*vw11 + v12*vw12 +
-                                                             v20*vw20 + v21*vw21 + v22*vw22 + vbias;
-                                            if (relu)
-                                                vout = v_select(vout > z, vout, vout*vrc);
-                                            vx_store(outptr + out_j, vout);
+                                            vout0 = vout1 = vout2 = vout3 = vbias;
+                                            v_expand_mul_add(v00, vw00, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v01, vw01, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v02, vw02, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v10, vw10, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v11, vw11, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v12, vw12, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v20, vw20, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v21, vw21, vout0, vout1, vout2, vout3);
+                                            v_expand_mul_add(v22, vw22, vout0, vout1, vout2, vout3);
+
+                                            v_store(outptr + out_j, v_outputStage(vout0, vmult, outZp));
+                                            v_store(outptr + out_j + 4, v_outputStage(vout1, vmult, outZp));
+                                            v_store(outptr + out_j + 8, v_outputStage(vout2, vmult, outZp));
+                                            v_store(outptr + out_j + 12, v_outputStage(vout3, vmult, outZp));
                                         }
                                     }
                                 #endif
                                     for (; out_j < outW1; out_j++)
                                     {
                                         int in_j = out_j * stride_w - pad_l;
-                                        out = imgptr0[in_j]*w00 + imgptr0[in_j + dilation_w]*w01 + imgptr0[in_j + dilation_w*2]*w02 +
-                                              imgptr1[in_j]*w10 + imgptr1[in_j + dilation_w]*w11 + imgptr1[in_j + dilation_w*2]*w12 +
-                                              imgptr2[in_j]*w20 + imgptr2[in_j + dilation_w]*w21 + imgptr2[in_j + dilation_w*2]*w22 + bias;
-                                        if (relu)
-                                            out = out > 0.f ? out : out*relu_coeff;
-                                        outptr[out_j] = out;
+                                        out = (int)imgptr0[in_j]*w00 + (int)imgptr0[in_j + dilation_w]*w01 + (int)imgptr0[in_j + dilation_w*2]*w02 +
+                                              (int)imgptr1[in_j]*w10 + (int)imgptr1[in_j + dilation_w]*w11 + (int)imgptr1[in_j + dilation_w*2]*w12 +
+                                              (int)imgptr2[in_j]*w20 + (int)imgptr2[in_j + dilation_w]*w21 + (int)imgptr2[in_j + dilation_w*2]*w22 + biasCopy;
+                                        out1 = outZp + ((out*mult + (1 << 21)) >> 22);
+                                        outptr[out_j] = std::min(std::max(out1, -128), 127);
                                     }
 
                                     for (; out_j < outW; out_j++ )
                                     {
                                         int in_j0 = out_j * stride_w - pad_l, in_j1 = in_j0 + dilation_w, in_j2 = in_j0 + dilation_w*2;
-                                        float s0 = 1.f, s1 = 1.f, s2 = 1.f;
+                                        int s0 = 1, s1 = 1, s2 = 1;
                                         if (in_j0 >= width)
                                         {
                                             in_j0 = 0;
-                                            s0 = 0.f;
+                                            s0 = 0;
+                                            biasCopy += inpZp*(w00 + w10 + w20);
                                         }
                                         if (in_j1 >= width)
                                         {
                                             in_j1 = 0;
-                                            s1 = 0.f;
+                                            s1 = 0;
+                                            biasCopy += inpZp*(w01 + w11 + w21);
                                         }
                                         if (in_j2 >= width)
                                         {
                                             in_j2 = 0;
-                                            s2 = 0.f;
+                                            s2 = 0;
+                                            biasCopy += inpZp*(w02 + w12 + w22);
                                         }
-                                        out = imgptr0[in_j0]*w00*s0 + imgptr0[in_j1]*w01*s1 + imgptr0[in_j2]*w02*s2 +
-                                              imgptr1[in_j0]*w10*s0 + imgptr1[in_j1]*w11*s1 + imgptr1[in_j2]*w12*s2 +
-                                              imgptr2[in_j0]*w20*s0 + imgptr2[in_j1]*w21*s1 + imgptr2[in_j2]*w22*s2 + bias;
-                                        if (relu)
-                                            out = out > 0.f ? out : out*relu_coeff;
-                                        outptr[out_j] = out;
+                                        out = (int)imgptr0[in_j0]*w00*s0 + (int)imgptr0[in_j1]*w01*s1 + (int)imgptr0[in_j2]*w02*s2 +
+                                              (int)imgptr1[in_j0]*w10*s0 + (int)imgptr1[in_j1]*w11*s1 + (int)imgptr1[in_j2]*w12*s2 +
+                                              (int)imgptr2[in_j0]*w20*s0 + (int)imgptr2[in_j1]*w21*s1 + (int)imgptr2[in_j2]*w22*s2 + biasCopy;
+                                        out1 = outZp + ((out*mult + (1 << 21)) >> 22);
+                                        outptr[out_j] = std::min(std::max(out1, -128), 127);
                                     }
                                 }
                             }
                             continue;
-                        }*/
+                        }
                         // do im2row for a part of input tensor
                         int8_t* rowbuf = rowbuf0;
 
@@ -768,7 +775,6 @@ public:
                                     if( j + 4 <= bsz )
                                     {
                                         k = 0;
-                                        // TODO: check performance with and without this part
                                         for( ; k < vsz; k++ )
                                         {
                                             const int8_t* inp = imgptr + j + k*inpPlaneSize;
@@ -912,14 +918,14 @@ public:
                     #if CV_TRY_AVX512_SKX
                         if(useAVX512)
                             opt_AVX512_SKX::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
-                                          outShape, bsz, vsz, vsz_a, outZp, multiplier, relu,
+                                          outShape, bsz, vsz, vsz_a, outZp, multptr, relu,
                                           cn0 == 0, cn1 == inpCn);
                         else
                     #endif
                     #if CV_TRY_AVX2
                         if(useAVX2)
                             opt_AVX2::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
-                                          outShape, bsz, vsz, vsz_a, outZp, multiplier, relu,
+                                          outShape, bsz, vsz, vsz_a, outZp, multptr, relu,
                                           cn0 == 0, cn1 == inpCn);
                         else
                     #endif
@@ -930,7 +936,7 @@ public:
                             int* outptr0 = data_out0 + ofs0 + i*outPlaneSize;
                             int* outptr1 = outptr0 + outPlaneSize;
                             int bias0 = biasptr[i], bias1 = biasptr[i+1];
-                            int mult0 = multiplier[i], mult1 = multiplier[i+1];
+                            int mult0 = multptr[i], mult1 = multptr[i+1];
 
                             if( i+1 >= outCn )
                             {
@@ -1010,16 +1016,13 @@ public:
                                 for( k = 0; k < vsz; k++ )
                                 {
                                     int8_t r0 = rptr[k];
-                                    s00 += (int16_t)wptr0[k] * (int16_t)r0;
-                                    s10 += (int16_t)wptr1[k] * (int16_t)r0;
+                                    s00 += (int)wptr0[k] * r0;
+                                    s10 += (int)wptr1[k] * r0;
                                 }
                                 if( cn1 == inpCn )
                                 {
-                                    int mul_round0 = (s00*mult0 + (1 << 21)) >> 22;
-                                    int mul_round1 = (s10*mult1 + (1 << 21)) >> 22;
-
-                                    int out0 = outZp + mul_round0;
-                                    int out1 = outZp + mul_round1;
+                                    int out0 = outZp + ((s00*mult0 + (1 << 21)) >> 22);
+                                    int out1 = outZp + ((s10*mult1 + (1 << 21)) >> 22);
 
                                     s00 = std::min(std::max(out0, -128), 127);
                                     s10 = std::min(std::max(out1, -128), 127);
@@ -1072,13 +1075,12 @@ public:
                    stride.width, stride.height, dilation.width, dilation.height);
         }*/
 
-        int outCn = blobs[1].size[0];
-        int inpGroupCn = blobs[1].size[1];
+        int outCn = blobs[0].size[0];
+        int inpGroupCn = blobs[0].size[1];
         CV_Assert_N(inputs.size() == (size_t)1, inputs[0].size[1] % inpGroupCn == 0,
                     outputs.size() == 1, inputs[0].data != outputs[0].data);
 
         int ngroups = inputs[0].size[1] / inpGroupCn;
-        CV_Assert(ngroups == 1); // TODO : Depthwise Convolution
         CV_Assert(outputs[0].size[1] % ngroups == 0);
 
         reluslope.clear();
@@ -1104,7 +1106,7 @@ public:
         int nstripes = std::max(getNumThreads(), 1);
         Mat output_int32 = Mat(shape(outputs[0]), CV_32S);
 
-        ParallelConv::run(inputs[0], output_int32, weightsMat, blobs[0], biasvec, reluslope, kernel_size, strides,
+        ParallelConv::run(inputs[0], output_int32, weightsMat, blobs[2], biasvec, reluslope, kernel_size, strides,
                           pads_begin, pads_end, dilations, activ.get(), ngroups, nstripes, input_zp, output_zp);
 
         // Dequantize outputs to FP32 or typecast outputs to int8.

@@ -2138,7 +2138,7 @@ public:
 
             // Quantize biases
             float biasScale = scales[0][0] * weightsScale;
-            biasQuantized.at<int>(i) = (int)(biasvec[i]/biasScale) - zeroPoints[0][0]*(cv::sum(weightsQuantized.row(i))[0]);
+            biasQuantized.at<int>(i) = (int)std::round(biasvec[i]/biasScale) - zeroPoints[0][0]*(cv::sum(weightsQuantized.row(i))[0]);
 
             // Compute and store quantized multiplier
             float realMult = (scales[0][0] * weightsScale)/scales[1][0];
@@ -2146,9 +2146,9 @@ public:
         }
 
         quantizedBlobs.clear();
-        quantizedBlobs.push_back(additionalParams);
         quantizedBlobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
         quantizedBlobs.push_back(biasQuantized);
+        quantizedBlobs.push_back(additionalParams);
     }
 
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
