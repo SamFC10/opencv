@@ -3463,21 +3463,22 @@ struct Net::Impl : public detail::NetImplBase
         }
         layer->forward(inps, ld.outputBlobs, ld.internals);
 
-        if (!LayerFactory::hasLayerInstance(ld.type+"Int8"))
+        if (!layer->tryQuantize())
             return ld;
 
         std::vector<std::vector<float> > scales(2);
         std::vector<std::vector<int> > zeroPoints(2);
+        std::vector<Mat> quantizedBlobs;
         getQuantizationParams(inps, scales[0], zeroPoints[0]);
         getQuantizationParams(ld.outputBlobs, scales[1], zeroPoints[1]);
-        layer->quantize(scales, zeroPoints);
+        layer->quantize(scales, zeroPoints, quantizedBlobs);
 
         LayerParams qParams = ld.params;
         qParams.set("input_scale", DictValue::arrayReal(scales[0].data(), scales[0].size()));
         qParams.set("output_scale", DictValue::arrayReal(scales[1].data(), scales[1].size()));
         qParams.set("input_zeropoint", DictValue::arrayInt(zeroPoints[0].data(), zeroPoints[0].size()));
         qParams.set("output_zeropoint", DictValue::arrayInt(zeroPoints[1].data(), zeroPoints[1].size()));
-        qParams.blobs = layer->quantizedBlobs;
+        qParams.blobs = quantizedBlobs;
 
         return LayerData(ld.id, ld.name, ld.type+"Int8", CV_8S, qParams);
     }
@@ -5395,6 +5396,7 @@ Ptr<BackendNode> Layer::tryAttach(const Ptr<BackendNode>& node)
 
 bool Layer::setActivation(const Ptr<ActivationLayer>&) { return false; }
 bool Layer::tryFuse(Ptr<Layer>&) { return false; }
+bool Layer::tryQuantize() { return false; }
 void Layer::getScaleShift(Mat& scale, Mat& shift) const
 {
     scale = Mat();
@@ -5527,9 +5529,10 @@ void Layer::run(const std::vector<Mat> &inputs, std::vector<Mat> &outputs, std::
     this->forward(inputs, outputs, internals);
 }
 
-void Layer::quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints)
+void Layer::quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints
+                     std::vector<Mat> &quantizedBlobs)
 {
-    this->quantize(scales, zeroPoints);
+    this->quantize(scales, zeroPoints, quantizedBlobs);
 }
 
 Layer::~Layer() {}
@@ -5636,16 +5639,6 @@ Ptr<Layer> LayerFactory::createLayerInstance(const String &type, LayerParams& pa
     {
         return Ptr<Layer>(); //NULL
     }
-}
-
-bool LayerFactory::hasLayerInstance(const String &type)
-{
-    CV_TRACE_FUNCTION();
-    CV_TRACE_ARG_VALUE(type, "type", type.c_str());
-
-    cv::AutoLock lock(getLayerFactoryMutex());
-    LayerFactory_Impl::const_iterator it = getLayerFactoryImpl().find(type);
-    return it != getLayerFactoryImpl().end();
 }
 
 BackendNode::BackendNode(int backendId) : backendId(backendId) {}

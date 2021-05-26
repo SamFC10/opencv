@@ -186,8 +186,6 @@ CV__DNN_INLINE_NS_BEGIN
 
         //! List of learned parameters must be stored here to allow read them by using Net::getParam().
         CV_PROP_RW std::vector<Mat> blobs;
-        //! List of parameters required for int8 layers must be stored here.
-        CV_PROP_RW std::vector<Mat> quantizedBlobs;
 
         /** @brief Computes and sets internal parameters according to inputs, outputs and blobs.
          *  @deprecated Use Layer::finalize(InputArrayOfArrays, OutputArrayOfArrays) instead
@@ -228,8 +226,10 @@ CV__DNN_INLINE_NS_BEGIN
         /** @brief Given the scales and zeropoints, compute the quantization parameters required for fixed point implementation.
          *  @param[in] scales input and output scales
          *  @param[in] zeroPoints input and output zeropoints
+         *  @param[out] quantizedBlobs Parameters required for int8 layers
          */
-        virtual void quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints);
+        virtual void quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints,
+                              std::vector<Mat> &quantizedBlobs);
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  inputs  the input blobs.
@@ -348,6 +348,12 @@ CV__DNN_INLINE_NS_BEGIN
          * @returns True if fusion was performed.
          */
         virtual bool tryFuse(Ptr<Layer>& top);
+
+        /**
+         * @brief Try to quantize current layer.
+         * @returns True if layer can be quantized.
+         */
+        virtual bool tryQuantize();
 
         /**
          * @brief Returns parameters of layers with channel-wise multiplication and addition.

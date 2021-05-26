@@ -622,6 +622,12 @@ public:
         biasvec[outCn] = biasvec[outCn+1] = biasvec[outCn-1];
     }
 
+    virtual bool tryQuantize() CV_OVERRIDE
+    {
+        // Quantized convolution with variable weights is not supported.
+        return !blobs.empty();
+    }
+
     virtual Ptr<BackendNode> initVkCom(const std::vector<Ptr<BackendWrapper> > &inputs) CV_OVERRIDE
     {
 #ifdef HAVE_VULKAN
@@ -2066,7 +2072,7 @@ public:
 #endif
 
     virtual void quantize(const std::vector<std::vector<float> > &scales,
-                          const std::vector<std::vector<int> > &zeroPoints) CV_OVERRIDE
+                          const std::vector<std::vector<int> > &zeroPoints, std::vector<Mat> &quantizedBlobs) CV_OVERRIDE
     {
         /*
         Convolution is done by transforming the inputs using the im2row method, and then a dot-product with the weights.
