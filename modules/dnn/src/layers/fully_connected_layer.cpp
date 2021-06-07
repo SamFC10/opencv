@@ -606,6 +606,47 @@ public:
     }
 #endif  // HAVE_DNN_NGRAPH
 
+    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
+                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    {
+        if (blobs.empty())
+            return false;
+
+        int numOutput = blobs[0].size[0];
+        float inputScale = scales[0][0], outputScale = scales[1][0];
+        int inputZp = zeropoints[0][0];
+
+        const int bits_precision = 23;
+        Mat weightsQuantized(weightsMat.rows, weightsMat.cols, CV_8S);
+        Mat biasQuantized(1, numOutput, CV_32S);
+        Mat additionalParams(1, numOutput, CV_32S);
+
+        double realMin, realMax, weightsScale;
+        for( int i = 0; i < numOutput; i++ )
+        {
+            // Quantize weights
+            cv::minMaxIdx(weightsMat.row(i), &realMin, &realMax);
+            realMin = std::min(realMin, 0.0);
+            realMax = std::max(realMax, 0.0);
+            weightsScale = (realMax == realMin) ? 1.0 : std::max(-realMin, realMax)/127;
+            weightsMat.row(i).convertTo(weightsQuantized.row(i), CV_8S, 1.f/weightsScale);
+
+            // Quantize biases
+            float biasScale = inputScale * weightsScale;
+            biasQuantized.at<int>(i) = (int)std::round(biasMat.at<float>(i)/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]);
+
+            // Compute and store multiplier
+            float realMult = (inputScale * weightsScale)/outputScale;
+            additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1)));
+        }
+
+        params.blobs.clear();
+        params.blobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
+        params.blobs.push_back(biasQuantized);
+        params.blobs.push_back(additionalParams);
+        return true;
+    }
+
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
                            const std::vector<MatShape> &outputs) const CV_OVERRIDE
     {

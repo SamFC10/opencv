@@ -62,6 +62,9 @@ void fastDepthwiseConv( const int8_t* wptr,
                         int* outptr_,
                         int out_d, int outH, int outW,
                         int inpZp, int outZp );
+void fastGEMM1T( const int8_t* vec, const int8_t* weights,
+                 size_t wstep, const int* bias, const int* multiplier,
+                 int* dst, int nvecs, int vecsize, int outZp );
 
 #if !defined(CV_CPU_OPTIMIZATION_DECLARATIONS_ONLY) && CV_AVX2
 #define OPENCV_FMADD_EPI8(_Tpvec, func) \
@@ -589,6 +592,68 @@ void fastDepthwiseConv( const int8_t* wptr,
             outptr[out_j] = std::min(std::max(out1, -128), 127);
         }
     }
+    _mm256_zeroupper();
+}
+
+// dst = vec * weights^t + bias
+void fastGEMM1T( const int8_t* vec, const int8_t* weights,
+                 size_t wstep, const int* bias, const int* multiplier,
+                 int* dst, int nvecs, int vecsize, int outZp )
+{
+    int i = 0;
+
+    for( ; i <= nvecs - 8; i += 8 )
+    {
+        const int8_t* wptr = weights + i*wstep;
+        __m256i vs0 = _mm256_setzero_si256(), vs1 = _mm256_setzero_si256(),
+                vs2 = _mm256_setzero_si256(), vs3 = _mm256_setzero_si256(),
+                vs4 = _mm256_setzero_si256(), vs5 = _mm256_setzero_si256(),
+                vs6 = _mm256_setzero_si256(), vs7 = _mm256_setzero_si256();
+
+        for( int k = 0; k < vecsize; k += 32, wptr += 32 )
+        {
+            __m256i v = _mm256_load_si256((const __m256i*)(vec + k));
+
+            vs0 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)wptr), v, vs0);
+            vs1 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep)), v, vs1);
+            vs2 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep*2)), v, vs2);
+            vs3 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep*3)), v, vs3);
+            vs4 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep*4)), v, vs4);
+            vs5 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep*5)), v, vs5);
+            vs6 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep*6)), v, vs6);
+            vs7 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)(wptr + wstep*7)), v, vs7);
+        }
+
+        __m256i s0 = _mm256_hadd_epi32(_mm256_hadd_epi32(vs0, vs1), _mm256_hadd_epi32(vs2, vs3));
+        __m256i s1 = _mm256_hadd_epi32(_mm256_hadd_epi32(vs4, vs5), _mm256_hadd_epi32(vs6, vs7));
+
+        s0 = _mm256_add_epi32(s0, _mm256_permute2x128_si256(s0, s0, 1));
+        s1 = _mm256_add_epi32(s1, _mm256_permute2x128_si256(s1, s1, 1));
+
+        __m128i t0 = _mm_add_epi32(_mm256_castsi256_si128(s0), _mm_loadu_si128((__m128i*)(bias + i)));
+        __m128i t1 = _mm_add_epi32(_mm256_castsi256_si128(s1), _mm_loadu_si128((__m128i*)(bias + i + 4)));
+
+        _mm_storeu_si128((__m128i*)(dst + i), OutputStage(t0, _mm_loadu_si128((__m128i*)(multiplier + i)), outZp));
+        _mm_storeu_si128((__m128i*)(dst + i + 4), OutputStage(t1, _mm_loadu_si128((__m128i*)(multiplier + i + 4)), outZp));
+    }
+
+    for( ; i < nvecs; i++ )
+    {
+        const int8_t* wptr = weights + i*wstep;
+        __m256i vs0 = _mm256_setzero_si256();
+
+        for( int k = 0; k < vecsize; k += 32, wptr += 32 )
+        {
+            __m256i v = _mm256_load_si256((const __m256i*)(vec + k));
+            vs0 = _mm256_fmaddepi8_epi32(_mm256_load_si256((const __m256i*)wptr), v, vs0);
+        }
+
+        __m256i s0 = _mm256_hadd_epi32(_mm256_hadd_epi32(vs0, vs0), vs0);
+        s0 = _mm256_add_epi32(s0, _mm256_permute2x128_si256(s0, s0, 1));
+        int temp = _mm_extract_epi32(_mm256_castsi256_si128(s0), 0);
+        dst[i] = OutputStage(temp + bias[i], multiplier[i], outZp);
+    }
+
     _mm256_zeroupper();
 }
 #endif // CV_CPU_OPTIMIZATION_DECLARATIONS_ONLY
