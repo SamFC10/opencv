@@ -133,7 +133,7 @@ public:
         {
             CV_Assert( srcMat.dims == 2 && srcMat.cols == weights.cols &&
                        dstMat.rows == srcMat.rows && dstMat.cols == weights.rows &&
-                       srcMat.type() == weights.type() && srcMat.type() == CV_8S && 
+                       srcMat.type() == weights.type() && srcMat.type() == CV_8S &&
                        dstMat.type() == CV_32S && biasMat.type() == CV_32S &&
                        biasMat.isContinuous() && (int)biasMat.total() == dstMat.cols );
 
@@ -223,7 +223,7 @@ public:
                     for( ; i < nw; i++, wptr += wstep )
                     {
                         int s0 = biasptr[i];
-                        int mult0 = multptr[i]; 
+                        int mult0 = multptr[i];
 
                         for( k = 0; k < vecsize; k++ )
                         {

@@ -4351,7 +4351,7 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
         std::vector<Mat> calibDataVec;
         calibData.getMatVector(calibDataVec);
         std::vector<String> inpNames = impl->netInputLayer->outNames;
-        CV_Assert(!inpNames.empty())
+        CV_Assert(!inpNames.empty());
         CV_CheckEQ(calibDataVec.size(), inpNames.size(), "Calibration data size should be equal to number of inputs");
         for (int i = 0; i < calibDataVec.size(); i++)
         {

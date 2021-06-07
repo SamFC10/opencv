@@ -2152,7 +2152,7 @@ public:
             biasQuantized.at<int>(i) = (int)std::round(biasvec[i]/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]);
 
             // Store quantized multiplier
-            float realMult = (inputScale * weightsScale)/scales[1][0];
+            float realMult = (inputScale * weightsScale) / outputScale;
             additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1)));
         }
 

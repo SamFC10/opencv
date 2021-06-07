@@ -328,6 +328,12 @@ CV__DNN_INLINE_NS_BEGIN
         static Ptr<FlattenLayer> create(const LayerParams &params);
     };
 
+    class CV_EXPORTS FlattenLayerInt8 : public Layer
+    {
+    public:
+        static Ptr<FlattenLayer> create(const LayerParams &params);
+    };
+
     class CV_EXPORTS QuantizeLayer : public Layer
     {
     public:
@@ -455,6 +461,12 @@ CV__DNN_INLINE_NS_BEGIN
     {
     public:
         static Ptr<PaddingLayer> create(const LayerParams& params);
+    };
+
+    class CV_EXPORTS PaddingLayerInt8 : public Layer
+    {
+    public:
+        static Ptr<PaddingLayerInt8> create(const LayerParams& params);
     };
 
     /* Activations */

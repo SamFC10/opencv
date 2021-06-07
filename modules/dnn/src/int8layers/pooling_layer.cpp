@@ -491,7 +491,7 @@ public:
                                     sum_val3 += v3;
                                 }
                             }
-                            
+
                             sum_val0 = v_round(v_reinterpret_as_f32(sum_val0)*ikarea);
                             sum_val1 = v_round(v_reinterpret_as_f32(sum_val1)*ikarea);
                             sum_val2 = v_round(v_reinterpret_as_f32(sum_val2)*ikarea);

@@ -135,7 +135,7 @@ TEST_P(Test_Int8_layers, Convolution1D)
 TEST_P(Test_Int8_layers, Convolution2D)
 {
     testLayer("layer_convolution", "Caffe", 0.0174, 0.0758, 1, 1, true);
-    testLayer("single_conv", "TensorFlow", 0.004, 0.02201);
+    testLayer("single_conv", "TensorFlow", 0.00413, 0.02201);
     testLayer("depthwise_conv2d", "TensorFlow", 0.0388, 0.169);
     testLayer("atrous_conv2d_valid", "TensorFlow", 0.0193, 0.0633);
     testLayer("atrous_conv2d_same", "TensorFlow", 0.0185, 0.1322);
@@ -149,6 +149,23 @@ TEST_P(Test_Int8_layers, Convolution3D)
     testLayer("conv3d", "TensorFlow", 0.00742, 0.02434);
     testLayer("conv3d", "ONNX", 0.00353, 0.00941);
     testLayer("conv3d_bias", "ONNX", 0.00129, 0.00249);
+}
+
+TEST_P(Test_Int8_layers, Flatten)
+{
+    testLayer("flatten", "TensorFlow", 0.0036, 0.0069, 1, 1, false, true, true);
+    testLayer("unfused_flatten", "TensorFlow", 0.0014, 0.0028);
+    testLayer("unfused_flatten_unknown_batch", "TensorFlow", 0.0043, 0.0051);
+}
+
+TEST_P(Test_Int8_layers, Padding)
+{
+    testLayer("spatial_padding", "TensorFlow", 0.0078, 0.028);
+    testLayer("mirror_pad", "TensorFlow", 0.0064, 0.013);
+    testLayer("pad_and_concat", "TensorFlow", 0.0026, 0.0121);
+    testLayer("padding", "ONNX", 0.0005, 0.0069);
+    testLayer("ReflectionPad2d", "ONNX", 0.00062, 0.0018);
+    testLayer("ZeroPad2d", "ONNX", 0.00037, 0.0018);
 }
 
 TEST_P(Test_Int8_layers, AvePooling)

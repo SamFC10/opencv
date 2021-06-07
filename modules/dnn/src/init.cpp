@@ -145,6 +145,8 @@ void initializeLayerFactory()
     CV_DNN_REGISTER_LAYER_CLASS(ConvolutionInt8,  ConvolutionLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(InnerProductInt8, InnerProductLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(PoolingInt8,      PoolingLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(FlattenInt8,      FlattenLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(PaddingInt8,      PaddingLayerInt8);
 }
 
 CV__DNN_INLINE_NS_END

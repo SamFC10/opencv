@@ -209,7 +209,7 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                  * now fold the 512 bit accumulator vectors into 256 bit vectors so that the AVX2 code can finish
                  * the tail of the vector
                  */
-                
+
                 vs00 = _mm256_add_epi32( _mm512_extracti32x8_epi32(vs00_5, 0), _mm512_extracti32x8_epi32(vs00_5, 1));
                 vs10 = _mm256_add_epi32( _mm512_extracti32x8_epi32(vs10_5, 0), _mm512_extracti32x8_epi32(vs10_5, 1));
                 vs20 = _mm256_add_epi32( _mm512_extracti32x8_epi32(vs20_5, 0), _mm512_extracti32x8_epi32(vs20_5, 1));
