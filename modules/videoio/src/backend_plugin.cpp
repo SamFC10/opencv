@@ -210,6 +210,24 @@ public:
     Ptr<IVideoCapture> createCapture(const std::string &filename, const VideoCaptureParameters& params) const CV_OVERRIDE;
     Ptr<IVideoWriter> createWriter(const std::string& filename, int fourcc, double fps,
                                    const cv::Size& sz, const VideoWriterParameters& params) const CV_OVERRIDE;
+
+    std::string getCapturePluginVersion(CV_OUT int& version_ABI, CV_OUT int& version_API)
+    {
+        CV_Assert(capture_api_ || plugin_api_);
+        const OpenCV_API_Header& api_header = capture_api_ ? capture_api_->api_header : plugin_api_->api_header;
+        version_ABI = api_header.min_api_version;
+        version_API = api_header.api_version;
+        return api_header.api_description;
+    }
+
+    std::string getWriterPluginVersion(CV_OUT int& version_ABI, CV_OUT int& version_API)
+    {
+        CV_Assert(writer_api_ || plugin_api_);
+        const OpenCV_API_Header& api_header = writer_api_ ? writer_api_->api_header : plugin_api_->api_header;
+        version_ABI = api_header.min_api_version;
+        version_API = api_header.api_version;
+        return api_header.api_description;
+    }
 };
 
 class PluginBackendFactory : public IBackendFactory
@@ -229,14 +247,41 @@ public:
 
     Ptr<IBackend> getBackend() const CV_OVERRIDE
     {
-        if (!initialized)
-        {
-            const_cast<PluginBackendFactory*>(this)->initBackend();
-        }
+        initBackend();
         return backend.staticCast<IBackend>();
     }
+
+    bool isBuiltIn() const CV_OVERRIDE { return false; }
+
+    std::string getCapturePluginVersion(
+            CV_OUT int& version_ABI,
+            CV_OUT int& version_API) const
+    {
+        initBackend();
+        if (!backend)
+            CV_Error_(Error::StsNotImplemented, ("Backend '%s' is not available", baseName_));
+        return backend->getCapturePluginVersion(version_ABI, version_API);
+    }
+
+    std::string getWriterPluginVersion(
+            CV_OUT int& version_ABI,
+            CV_OUT int& version_API) const
+    {
+        initBackend();
+        if (!backend)
+            CV_Error_(Error::StsNotImplemented, ("Backend '%s' is not available", baseName_));
+        return backend->getWriterPluginVersion(version_ABI, version_API);
+    }
+
 protected:
-    void initBackend()
+    inline void initBackend() const
+    {
+        if (!initialized)
+        {
+            const_cast<PluginBackendFactory*>(this)->initBackend_();
+        }
+    }
+    void initBackend_()
     {
         AutoLock lock(getInitializationMutex());
         try {
@@ -415,7 +460,7 @@ public:
         if (plugin_api->api_header.api_version >= 1 && plugin_api->v1.Capture_open_with_params)
         {
             std::vector<int> vint_params = params.getIntVector();
-            int* c_params = &vint_params[0];
+            int* c_params = vint_params.data();
             unsigned n_params = (unsigned)(vint_params.size() / 2);
 
             if (CV_ERROR_OK == plugin_api->v1.Capture_open_with_params(
@@ -547,7 +592,7 @@ public:
             }
             if (params.warnUnusedParameters())
             {
-                CV_LOG_ERROR(NULL, "VIDEOIO/FFMPEG: unsupported parameters in VideoWriter, see logger INFO channel for details");
+                CV_LOG_ERROR(NULL, "VIDEOIO: unsupported parameters in VideoWriter, see logger INFO channel for details");
                 return Ptr<PluginWriter>();
             }
             if (CV_ERROR_OK == plugin_api->v0.Writer_open(filename.c_str(), fourcc, fps, sz.width, sz.height, isColor, &writer))
@@ -684,7 +729,50 @@ Ptr<IBackendFactory> createPluginBackendFactory(VideoCaptureAPIs id, const char*
 #if OPENCV_HAVE_FILESYSTEM_SUPPORT && defined(ENABLE_PLUGINS)
     return makePtr<impl::PluginBackendFactory>(id, baseName); //.staticCast<IBackendFactory>();
 #else
+    CV_UNUSED(id);
+    CV_UNUSED(baseName);
     return Ptr<IBackendFactory>();
+#endif
+}
+
+
+std::string getCapturePluginVersion(
+    const Ptr<IBackendFactory>& backend_factory,
+    CV_OUT int& version_ABI,
+    CV_OUT int& version_API
+)
+{
+#if OPENCV_HAVE_FILESYSTEM_SUPPORT && defined(ENABLE_PLUGINS)
+    using namespace impl;
+    CV_Assert(backend_factory);
+    PluginBackendFactory* plugin_backend_factory = dynamic_cast<PluginBackendFactory*>(backend_factory.get());
+    CV_Assert(plugin_backend_factory);
+    return plugin_backend_factory->getCapturePluginVersion(version_ABI, version_API);
+#else
+    CV_UNUSED(backend_factory);
+    CV_UNUSED(version_ABI);
+    CV_UNUSED(version_API);
+    CV_Error(Error::StsBadFunc, "Plugins are not available in this build");
+#endif
+}
+
+std::string getWriterPluginVersion(
+    const Ptr<IBackendFactory>& backend_factory,
+    CV_OUT int& version_ABI,
+    CV_OUT int& version_API
+)
+{
+#if OPENCV_HAVE_FILESYSTEM_SUPPORT && defined(ENABLE_PLUGINS)
+    using namespace impl;
+    CV_Assert(backend_factory);
+    PluginBackendFactory* plugin_backend_factory = dynamic_cast<PluginBackendFactory*>(backend_factory.get());
+    CV_Assert(plugin_backend_factory);
+    return plugin_backend_factory->getWriterPluginVersion(version_ABI, version_API);
+#else
+    CV_UNUSED(backend_factory);
+    CV_UNUSED(version_ABI);
+    CV_UNUSED(version_API);
+    CV_Error(Error::StsBadFunc, "Plugins are not available in this build");
 #endif
 }
 

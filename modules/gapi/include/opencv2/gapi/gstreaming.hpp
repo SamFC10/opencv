@@ -180,7 +180,10 @@ public:
      * @param ins vector of inputs to process.
      * @sa gin
      */
-    GAPI_WRAP void setSource(GRunArgs &&ins);
+    void setSource(GRunArgs &&ins);
+
+    /// @private -- Exclude this function from OpenCV documentation
+    GAPI_WRAP void setSource(const cv::detail::ExtractArgsCallback& callback);
 
     /**
      * @brief Specify an input video stream for a single-input
@@ -251,6 +254,7 @@ public:
     bool pull(cv::GRunArgsP &&outs);
 
     // NB: Used from python
+    /// @private -- Exclude this function from OpenCV documentation
     GAPI_WRAP std::tuple<bool, cv::GRunArgs> pull();
 
     /**
@@ -366,6 +370,31 @@ protected:
     std::shared_ptr<Priv> m_priv;
 };
 /** @} */
+
+namespace gapi {
+namespace streaming {
+/**
+ * @brief Specify queue capacity for streaming execution.
+ *
+ * In the streaming mode the pipeline steps are connected with queues
+ * and this compile argument controls every queue's size.
+ */
+struct GAPI_EXPORTS queue_capacity
+{
+    explicit queue_capacity(size_t cap = 1) : capacity(cap) { };
+    size_t capacity;
+};
+/** @} */
+} // namespace streaming
+} // namespace gapi
+
+namespace detail
+{
+template<> struct CompileArgTag<cv::gapi::streaming::queue_capacity>
+{
+    static const char* tag() { return "gapi.queue_capacity"; }
+};
+}
 
 }
 

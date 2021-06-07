@@ -575,6 +575,12 @@ namespace core {
             return std::make_tuple(empty_gopaque_desc(), empty_array_desc(), empty_array_desc());
         }
     };
+
+    G_TYPED_KERNEL(GTranspose, <GMat(GMat)>, "org.opencv.core.transpose") {
+        static GMatDesc outMeta(GMatDesc in) {
+            return in.withSize({in.size.height, in.size.width});
+        }
+    };
 } // namespace core
 
 namespace streaming {
@@ -645,7 +651,7 @@ Supported matrix data types are @ref CV_8UC1, @ref CV_8UC3, @ref CV_16UC1, @ref 
 @param ddepth optional depth of the output matrix.
 @sa sub, addWeighted
 */
-GAPI_EXPORTS GMat addC(const GMat& src1, const GScalar& c, int ddepth = -1);
+GAPI_EXPORTS_W GMat addC(const GMat& src1, const GScalar& c, int ddepth = -1);
 //! @overload
 GAPI_EXPORTS GMat addC(const GScalar& c, const GMat& src1, int ddepth = -1);
 
@@ -1490,7 +1496,7 @@ enlarge an image, it will generally look best with cv::INTER_CUBIC (slow) or cv:
 
 @sa  warpAffine, warpPerspective, remap, resizeP
  */
-GAPI_EXPORTS GMat resize(const GMat& src, const Size& dsize, double fx = 0, double fy = 0, int interpolation = INTER_LINEAR);
+GAPI_EXPORTS_W GMat resize(const GMat& src, const Size& dsize, double fx = 0, double fy = 0, int interpolation = INTER_LINEAR);
 
 /** @brief Resizes a planar image.
 
@@ -1909,14 +1915,14 @@ kmeans(const GMat& data, const int K, const GMat& bestLabels,
  - Function textual ID is "org.opencv.core.kmeansNDNoInit"
  - #KMEANS_USE_INITIAL_LABELS flag must not be set while using this overload.
  */
-GAPI_EXPORTS std::tuple<GOpaque<double>,GMat,GMat>
+GAPI_EXPORTS_W std::tuple<GOpaque<double>,GMat,GMat>
 kmeans(const GMat& data, const int K, const TermCriteria& criteria, const int attempts,
        const KmeansFlags flags);
 
 /** @overload
 @note Function textual ID is "org.opencv.core.kmeans2D"
  */
-GAPI_EXPORTS std::tuple<GOpaque<double>,GArray<int>,GArray<Point2f>>
+GAPI_EXPORTS_W std::tuple<GOpaque<double>,GArray<int>,GArray<Point2f>>
 kmeans(const GArray<Point2f>& data, const int K, const GArray<int>& bestLabels,
        const TermCriteria& criteria, const int attempts, const KmeansFlags flags);
 
@@ -1927,6 +1933,21 @@ GAPI_EXPORTS std::tuple<GOpaque<double>,GArray<int>,GArray<Point3f>>
 kmeans(const GArray<Point3f>& data, const int K, const GArray<int>& bestLabels,
        const TermCriteria& criteria, const int attempts, const KmeansFlags flags);
 
+
+/** @brief Transposes a matrix.
+
+The function transposes the matrix:
+\f[\texttt{dst} (i,j) =  \texttt{src} (j,i)\f]
+
+@note
+ - Function textual ID is "org.opencv.core.transpose"
+ - No complex conjugation is done in case of a complex matrix. It should be done separately if needed.
+
+@param src input array.
+*/
+GAPI_EXPORTS GMat transpose(const GMat& src);
+
+
 namespace streaming {
 /** @brief Gets dimensions from Mat.
 
@@ -1935,7 +1956,7 @@ namespace streaming {
 @param src Input tensor
 @return Size (tensor dimensions).
 */
-GAPI_EXPORTS GOpaque<Size> size(const GMat& src);
+GAPI_EXPORTS_W GOpaque<Size> size(const GMat& src);
 
 /** @overload
 Gets dimensions from rectangle.
@@ -1945,7 +1966,7 @@ Gets dimensions from rectangle.
 @param r Input rectangle.
 @return Size (rectangle dimensions).
 */
-GAPI_EXPORTS GOpaque<Size> size(const GOpaque<Rect>& r);
+GAPI_EXPORTS_W GOpaque<Size> size(const GOpaque<Rect>& r);
 
 /** @brief Gets dimensions from MediaFrame.
 
