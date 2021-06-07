@@ -1327,6 +1327,18 @@ public:
         return true;
     }
 
+    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
+                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    {
+        if (type == MAX || type == AVE)
+        {
+            scales[1] = scales[0];
+            zeropoints[1] = zeropoints[0];
+            return true;
+        }
+        return false;
+    }
+
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
                            const std::vector<MatShape> &outputs) const CV_OVERRIDE
     {

@@ -151,6 +151,32 @@ TEST_P(Test_Int8_layers, Convolution3D)
     testLayer("conv3d_bias", "ONNX", 0.00129, 0.00249);
 }
 
+TEST_P(Test_Int8_layers, AvePooling)
+{
+    testLayer("layer_pooling_ave", "Caffe", 0.397, 1.005);
+    testLayer("ave_pool_same", "TensorFlow", 0.00293, 0.008);
+    testLayer("ave_pool3d", "TensorFlow", 0.00465, 0.0113);
+    testLayer("average_pooling_1d", "ONNX", 0.0023, 0.0061);
+    testLayer("average_pooling", "ONNX", 0.0887, 0.149);
+    testLayer("average_pooling_dynamic_axes", "ONNX", 0.0046, 0.0096);
+    testLayer("ave_pool3d", "ONNX", 0.00413, 0.0094);
+}
+
+TEST_P(Test_Int8_layers, MaxPooling)
+{
+    testLayer("max_pool_even", "TensorFlow", 0.0062, 0.0184);
+    testLayer("max_pool_odd_valid", "TensorFlow", 0.0064, 0.0133);
+    testLayer("conv_pool_nchw", "TensorFlow", 0.009, 0.033);
+    testLayer("max_pool3d", "TensorFlow", 0.0047, 0.012);
+    testLayer("maxpooling_1d", "ONNX", 0.0042, 0.0062);
+    testLayer("two_maxpooling_1d", "ONNX", 0.0047, 0.0097);
+    testLayer("pool_conv_1d", "ONNX", 0.0005, 0.0013);
+    testLayer("maxpooling", "ONNX", 0.0069, 0.0115);
+    testLayer("two_maxpooling", "ONNX", 0.0049, 0.0097);
+    testLayer("pool_conv_3d", "ONNX", 0.00426, 0.0118);
+    testLayer("max_pool3d", "ONNX", 0.0069, 0.0112);
+}
+
 // TODO : skip this test for all other backends except OpenCV/CPU.
 INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_layers, dnnBackendsAndTargets());
 }} // namespace
