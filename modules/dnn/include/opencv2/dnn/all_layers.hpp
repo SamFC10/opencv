@@ -227,7 +227,6 @@ CV__DNN_INLINE_NS_BEGIN
     class CV_EXPORTS ConvolutionLayerInt8 : public BaseConvolutionLayer
     {
     public:
-        float input_sc, output_sc;
         int input_zp, output_zp;
         static Ptr<BaseConvolutionLayer> create(const LayerParams& params);
     };
@@ -313,6 +312,22 @@ CV__DNN_INLINE_NS_BEGIN
     {
     public:
         static Ptr<FlattenLayer> create(const LayerParams &params);
+    };
+
+    class CV_EXPORTS QuantizeLayer : public Layer
+    {
+    public:
+        float scale;
+        int zeropoint;
+        static Ptr<QuantizeLayer> create(const LayerParams &params);
+    };
+
+    class CV_EXPORTS DequantizeLayer : public Layer
+    {
+    public:
+        float scale;
+        int zeropoint;
+        static Ptr<DequantizeLayer> create(const LayerParams &params);
     };
 
     class CV_EXPORTS ConcatLayer : public Layer

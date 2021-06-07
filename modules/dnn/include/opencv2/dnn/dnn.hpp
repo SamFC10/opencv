@@ -235,13 +235,14 @@ CV__DNN_INLINE_NS_BEGIN
          */
         virtual void forward(InputArrayOfArrays inputs, OutputArrayOfArrays outputs, OutputArrayOfArrays internals);
 
-        /** @brief Given the scales and zeropoints, compute the quantization parameters required for fixed point implementation.
-         *  @param[in] scales input and output scales
-         *  @param[in] zeroPoints input and output zeropoints
-         *  @param[out] quantizedBlobs Parameters required for int8 layers
+        /** @brief Tries to quantize the given layer and compute the quantization parameters required for fixed point implementation.
+         *  @param[in] scales input and output scales.
+         *  @param[in] zeropoints input and output zeropoints.
+         *  @param[out] params Quantized parameters required for fixed point implementation of that layer.
+         *  @returns True if layer can be quantized.
          */
-        virtual void quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints,
-                              std::vector<Mat> &quantizedBlobs);
+        virtual bool tryQuantize(std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeropoints,
+                                 LayerParams& params);
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  inputs  the input blobs.
@@ -360,12 +361,6 @@ CV__DNN_INLINE_NS_BEGIN
          * @returns True if fusion was performed.
          */
         virtual bool tryFuse(Ptr<Layer>& top);
-
-        /**
-         * @brief Try to quantize current layer.
-         * @returns True if layer can be quantized.
-         */
-        virtual bool tryQuantize();
 
         /**
          * @brief Returns parameters of layers with channel-wise multiplication and addition.
@@ -574,29 +569,23 @@ CV__DNN_INLINE_NS_BEGIN
                                                     const std::vector<String>& outBlobNames);
 
         /** @brief Returns a quantized Net from a floating-point Net.
-         *  @param refData contains reference data to compute the quantization parameters.
+         *  @param calibData Calibration data to compute the quantization parameters.
          *  @param inputsDtype Datatype of quantized net's inputs. Can be CV_32F or CV_8S.
          *  @param outputsDtype Datatype of quantized net's outputs. Can be CV_32F or CV_8S.
          */
-        CV_WRAP Net quantize(InputArrayOfArrays refData, const int& inputsDtype, const int& outputsDtype);
+        CV_WRAP Net quantize(InputArrayOfArrays calibData, const int& inputsDtype, const int& outputsDtype);
 
         /** @brief Returns input scale and zeropoint for a quantized Net.
          *  @param scales output parameter for returning input scales.
-         *  @param zeroPoints output parameter for returning input zero-points.
+         *  @param zeropoints output parameter for returning input zeropoints.
          */
-        CV_WRAP void getInputDetails(CV_OUT std::vector<float>& scales, CV_OUT std::vector<int>& zeroPoints) const;
-
-        /** @overload For Nets with single input.*/
-        CV_WRAP void getInputDetails(CV_OUT float& scale, CV_OUT int& zeroPoint) const;
+        CV_WRAP void getInputDetails(CV_OUT std::vector<float>& scales, CV_OUT std::vector<int>& zeropoints) const;
 
         /** @brief Returns output scale and zeropoint for a quantized Net.
          *  @param scales output parameter for returning output scales.
-         *  @param zeroPoints output parameter for returning output zero-points.
+         *  @param zeropoints output parameter for returning output zeropoints.
          */
-        CV_WRAP void getOutputDetails(CV_OUT std::vector<float>& scales, CV_OUT std::vector<int>& zeroPoints) const;
-
-        /** @overload For Nets with single output.*/
-        CV_WRAP void getOutputDetails(CV_OUT float& scale, CV_OUT int& zeroPoint) const;
+        CV_WRAP void getOutputDetails(CV_OUT std::vector<float>& scales, CV_OUT std::vector<int>& zeropoints) const;
 
         /**
          * @brief Compile Halide layers.

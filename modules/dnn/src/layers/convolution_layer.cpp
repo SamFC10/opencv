@@ -625,12 +625,6 @@ public:
         biasvec[outCn] = biasvec[outCn+1] = biasvec[outCn-1];
     }
 
-    virtual bool tryQuantize() CV_OVERRIDE
-    {
-        // Quantized convolution with variable weights is not supported.
-        return !blobs.empty();
-    }
-
     virtual Ptr<BackendNode> initVkCom(const std::vector<Ptr<BackendWrapper> > &inputs) CV_OVERRIDE
     {
 #ifdef HAVE_VULKAN
@@ -2074,8 +2068,8 @@ public:
     }
 #endif
 
-    virtual void quantize(const std::vector<std::vector<float> > &scales,
-                          const std::vector<std::vector<int> > &zeroPoints, std::vector<Mat> &quantizedBlobs) CV_OVERRIDE
+    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
+                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         /*
         Convolution is done by transforming the inputs using the im2row method, and then a dot-product with the weights.
@@ -2130,6 +2124,14 @@ public:
         References - https://arxiv.org/pdf/1712.05877.pdf
         */
 
+        // Quantized convolution with variable weights is not supported.
+        if (blobs.empty())
+            return false;
+
+        float inputScale = scales[0][0], outputScale = scales[1][0];
+        int inputZp = zeropoints[0][0];
+        params.set("input_zeropoint", inputZp);
+
         const int bits_precision = 23;
         Mat additionalParams(1, numOutput, CV_32S);
         Mat weightsQuantized(weightsMat.rows, weightsMat.cols, CV_8S);
@@ -2142,22 +2144,23 @@ public:
             cv::minMaxIdx(weightsMat.row(i), &realMin, &realMax);
             realMin = std::min(realMin, 0.0);
             realMax = std::max(realMax, 0.0);
-            weightsScale = (realMax == realMin) ? 1.0 : std::max(std::abs(realMin), realMax)/127;
+            weightsScale = (realMax == realMin) ? 1.0 : std::max(-realMin, realMax)/127;
             weightsMat.row(i).convertTo(weightsQuantized.row(i), CV_8S, 1.f/weightsScale);
 
             // Quantize biases
-            float biasScale = scales[0][0] * weightsScale;
-            biasQuantized.at<int>(i) = (int)std::round(biasvec[i]/biasScale) - zeroPoints[0][0]*(cv::sum(weightsQuantized.row(i))[0]);
+            float biasScale = inputScale * weightsScale;
+            biasQuantized.at<int>(i) = (int)std::round(biasvec[i]/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]);
 
-            // Compute and store quantized multiplier
-            float realMult = (scales[0][0] * weightsScale)/scales[1][0];
+            // Store quantized multiplier
+            float realMult = (inputScale * weightsScale)/scales[1][0];
             additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1)));
         }
 
-        quantizedBlobs.clear();
-        quantizedBlobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
-        quantizedBlobs.push_back(biasQuantized);
-        quantizedBlobs.push_back(additionalParams);
+        params.blobs.clear();
+        params.blobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
+        params.blobs.push_back(biasQuantized);
+        params.blobs.push_back(additionalParams);
+        return true;
     }
 
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,

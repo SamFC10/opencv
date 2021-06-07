@@ -1050,7 +1050,7 @@ public:
                     if (index < outShapes.size() && inPlace)
                     {
                         CV_Assert(ld.inputBlobs[0]->total() == total(shapes[index]));
-                        ld.outputBlobs[index] = ld.inputBlobs[0]->reshape(1, shapes[index]);
+                        ld.inputBlobs[0]->reshape(1, shapes[index]).convertTo(ld.outputBlobs[index], ld.dtype);
                         reuse(ld.inputBlobsId[0], blobPin);
                     }
                     else
@@ -3439,92 +3439,88 @@ struct Net::Impl : public detail::NetImplBase
 #endif
     }
 
-    void getQuantizationParams(InputArrayOfArrays src_arr, std::vector<float>& scales, std::vector<int>& zeropoints)
+    void getQuantizationParams(const Mat& src, const std::string& type,
+                               std::vector<float>& scales, std::vector<int>& zeropoints)
     {
         const int qmin = -128; // INT8_MIN
         const int qmax = 127;  // INT8_MAX
-        double realMin, realMax, sc, zp;
+        double rmin, rmax, scale, zeropoint;
 
-        std::vector<Mat> src;
-        src_arr.getMatVector(src);
-        for (int i = 0; i < src.size(); ++i)
+        if (type == "MinMax")
         {
-            cv::minMaxIdx(src[i], &realMin, &realMax);
+            cv::minMaxIdx(src, &rmin, &rmax);
 
-            realMin = std::min(realMin, 0.0);
-            realMax = std::max(realMax, 0.0);
+            rmin = std::min(rmin, 0.0);
+            rmax = std::max(rmax, 0.0);
 
-            sc = (realMax == realMin) ? 1.0 : (realMax - realMin)/(qmax - qmin);
-            zp = qmin - (realMin/sc);
+            scale = (rmax == rmin) ? 1.0 : (rmax - rmin)/(qmax - qmin);
+            zeropoint = qmin - (rmin/scale);
 
-            scales.push_back((float)sc);
-            zeropoints.push_back((int)std::round(zp));
+            scales.push_back((float)scale);
+            zeropoints.push_back((int)std::round(zeropoint));
         }
+        else if (type == "PerChannelMinMax")
+        {
+            int channels = src.size[0];
+            for (int i = 0; i < channels; i++)
+            {
+                cv::minMaxIdx(src.row(i), &rmin, &rmax);
+
+                rmin = std::min(rmin, 0.0);
+                rmax = std::max(rmax, 0.0);
+
+                scale = (rmax == rmin) ? 1.0 : std::max(-rmin, rmax)/qmax;
+                scales.push_back((float)scale);
+                zeropoints.push_back(0);
+            }
+        }
+        else
+            CV_Error(Error::StsBadArg, "Unknown calibration type \"" + type + "\"");
     }
 
-    LayerData quantizeLayer(LayerData &ld)
+    void quantizeLayer(LayerData& ld, std::vector<float>& scales, std::vector<int>& zeropoints)
     {
         CV_TRACE_FUNCTION();
+        CV_Assert(!scales.empty() && !zeropoints.empty());
 
         if (ld.skip)
-            return ld;
+        {
+            LayerData &inpld = layers[ld.inputBlobsId[0].lid];
+            if ((inpld.type == "Convolution" && (ld.type == "ReLU" || ld.type == "ReLU6" || ld.type == "BatchNorm")) ||
+                (inpld.type == "InnerProduct" && (ld.type == "ReLU" || ld.type == "ReLU6")) ||
+                (inpld.type == "BatchNorm" && inpld.skip && (ld.type == "ReLU" || ld.type == "ReLU6")))
+            {
+                ld.dtype = CV_8S;
+            }
+            else if (ld.type == "Concat")
+            {
+                scales.clear(); zeropoints.clear();
+                getQuantizationParams(ld.outputBlobs[0], "MinMax", scales, zeropoints);
+            }
+            return;
+        }
+        std::vector<std::vector<float> > in_out_scales(2);
+        std::vector<std::vector<int> > in_out_zeropoints(2);
+        in_out_scales[0] = scales;
+        in_out_zeropoints[0] = zeropoints;
 
         Ptr<Layer> layer = ld.layerInstance;
         std::vector<Mat> inps(ld.inputBlobs.size());
         for (int i = 0; i < ld.inputBlobs.size(); ++i)
-        {
             inps[i] = *ld.inputBlobs[i];
-        }
         layer->forward(inps, ld.outputBlobs, ld.internals);
 
-        if (!layer->tryQuantize())
-            return ld;
+        for (int i = 0; i < ld.outputBlobs.size(); ++i)
+            getQuantizationParams(ld.outputBlobs[i], "MinMax", in_out_scales[1], in_out_zeropoints[1]);
 
-        std::vector<std::vector<float> > scales(2);
-        std::vector<std::vector<int> > zeroPoints(2);
-        std::vector<Mat> quantizedBlobs;
-        getQuantizationParams(inps, scales[0], zeroPoints[0]);
-        getQuantizationParams(ld.outputBlobs, scales[1], zeroPoints[1]);
-        layer->quantize(scales, zeroPoints, quantizedBlobs);
-
-        LayerParams qParams = ld.params;
-        qParams.set("input_scale", DictValue::arrayReal(scales[0].data(), scales[0].size()));
-        qParams.set("output_scale", DictValue::arrayReal(scales[1].data(), scales[1].size()));
-        qParams.set("input_zeropoint", DictValue::arrayInt(zeroPoints[0].data(), zeroPoints[0].size()));
-        qParams.set("output_zeropoint", DictValue::arrayInt(zeroPoints[1].data(), zeroPoints[1].size()));
-        qParams.blobs = quantizedBlobs;
-
-        return LayerData(ld.id, ld.name, ld.type+"Int8", CV_8S, qParams);
-    }
-
-    void setLayersOutputPrecision(const int& inputsDtype, const int& outputsDtype)
-    {
-        MapIdToLayerData::iterator it = layers.begin();
-        it->second.dtype = inputsDtype;
-        it++;
-        for( ; it != layers.end(); it++ )
+        if (layer->tryQuantize(in_out_scales, in_out_zeropoints, ld.params))
         {
-            LayerData &currLd = it->second;
-            if (currLd.requiredOutputs.size() == 0)
-                currLd.dtype = outputsDtype;
-            for( int i = 0; i < currLd.inputBlobsId.size(); i++ )
-            {
-                LayerData &inpLd = getLayerData(currLd.inputBlobsId[i].lid);
-                if (inpLd.type == "ConvolutionInt8" && (currLd.type == "BatchNorm" || currLd.type == "ReLU") && currLd.consumers.size() == 1)
-                {
-                    LayerData &nextLd = layers[currLd.consumers[0].lid];
-                    if (nextLd.type == "ReLU")
-                    {
-                        LayerData &nextnextLd = layers[nextLd.consumers[0].lid];
-                        nextLd.dtype =  nextnextLd.dtype;
-                    }
-                    currLd.dtype = nextLd.dtype;
-                }
-
-                if (inpLd.dtype == CV_8S && currLd.dtype == CV_32F)
-                    inpLd.dtype = CV_32F;
-            }
+            ld.type += "Int8";
+            ld.dtype = CV_8S;
         }
+
+        scales = in_out_scales[1];
+        zeropoints = in_out_zeropoints[1];
     }
 
     void getLayerShapesRecursively(int id, LayersShapesMap& inOutShapes)
@@ -3683,7 +3679,7 @@ struct Net::Impl : public detail::NetImplBase
                     const MatShape& shape = layersShapes[inputLayerId].out[inputLayerIds[i].oid];
                     layersShapes[layerId].in.push_back(shape);
                 }
-                it->second.layerInstance->updateMemoryShapes(layersShapes[layerId].in);
+                it->second.getLayerInstance()->updateMemoryShapes(layersShapes[layerId].in);
             }
         }
     }
@@ -4337,33 +4333,29 @@ void Net::forward(std::vector<std::vector<Mat> >& outputBlobs,
     }
 }
 
-Net Net::quantize(InputArrayOfArrays refData, const int& inputsDtype, const int& outputsDtype)
+Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const int& outputsDtype)
 {
     CV_TRACE_FUNCTION();
 
     // Net can be quantized only once.
     if (impl->netWasQuantized)
-        return *this;
+        CV_Error(Error::StsBadArg, "Cannot quantize a quantized net");
 
-    // Set-up floating point Net with reference data as input.
-    if (refData.isMat())
+    // Set-up floating point Net with calibration data as input.
+    if (calibData.isMat())
     {
-        setInput(refData.getMat());
+        setInput(calibData.getMat());
     }
-    else if (refData.isMatVector())
+    else if (calibData.isMatVector())
     {
-        std::vector<Mat> refDataVec;
-        refData.getMatVector(refDataVec);
+        std::vector<Mat> calibDataVec;
+        calibData.getMatVector(calibDataVec);
         std::vector<String> inpNames = impl->netInputLayer->outNames;
-        // netInputLayer->outNames will not be empty if setInputsNames() has been called before. There is no issue if the Net was created
-        // using readNet() and their variants like readNetFromCaffe() as setInputsNames() is called automatically.
-        // But if a Net is created by adding individual layers to it using the addLayer() or addLayerToPrev() functions,
-        // then setInputsNames() HAS to be called before quantize() so that outNames is not empty.
-        // Not doing so will cause the below check and other checks depending on netInputLayer->outNames to fail.
-        CV_CheckEQ(refDataVec.size(), inpNames.size(), "Reference data size should be equal to number of inputs");
-        for (int i = 0; i < refDataVec.size(); i++)
+        CV_Assert(!inpNames.empty())
+        CV_CheckEQ(calibDataVec.size(), inpNames.size(), "Calibration data size should be equal to number of inputs");
+        for (int i = 0; i < calibDataVec.size(); i++)
         {
-            setInput(refDataVec[i], inpNames[i]);
+            setInput(calibDataVec[i], inpNames[i]);
         }
     }
 
@@ -4379,109 +4371,114 @@ Net Net::quantize(InputArrayOfArrays refData, const int& inputsDtype, const int&
     // Floating point Net set-up done. Prepare quantized Net.
     Net dstNet;
     dstNet.setInputsNames(impl->netInputLayer->outNames);
-    Impl::MapIdToLayerData::iterator it = impl->layers.begin();
-    it++; // skip Data layer
-    for( ; it != impl->layers.end(); it++ )
+    std::vector<std::vector<float> > layerScales;
+    std::vector<std::vector<int> > layerZeropoints;
+    for (Impl::MapIdToLayerData::iterator it = impl->layers.begin(); it != impl->layers.end(); it++)
     {
-        LayerData &ld = it->second;
-        LayerData qld = impl->quantizeLayer(ld);
-
-        // Add quantized layer to Net and connect to its inputs.
-        int newLid = dstNet.addLayer(qld.name, qld.type, qld.dtype, qld.params);
-        for( int i = 0; i < ld.inputBlobsId.size(); i++ )
+        LayerData ld = it->second;
+        std::vector<float> sc;
+        std::vector<int> zp;
+        if (ld.id == 0)
+        {
+            for (int i = 0; i < ld.outputBlobs.size(); i++)
+                impl->getQuantizationParams(ld.outputBlobs[i], "MinMax", sc, zp);
+            LayerData &quantInpLd = dstNet.impl->layers[0];
+            quantInpLd.dtype = inputsDtype;
+            quantInpLd.params.set("scales", DictValue::arrayReal(sc.data(), sc.size()));
+            quantInpLd.params.set("zeropoints", DictValue::arrayInt(zp.data(), zp.size()));
+            layerScales.push_back(sc);
+            layerZeropoints.push_back(zp);
+            continue;
+        }
+        for (int i = 0; i < ld.inputBlobsId.size(); i++)
         {
             LayerPin &pin = ld.inputBlobsId[i];
-            dstNet.connect(pin.lid, pin.oid, newLid, i);
+            sc.push_back(layerScales[pin.lid][pin.oid]);
+            zp.push_back(layerZeropoints[pin.lid][pin.oid]);
+        }
+        impl->quantizeLayer(ld, sc, zp);
+        ld.params.set("scales", DictValue::arrayReal(sc.data(), sc.size()));
+        ld.params.set("zeropoints", DictValue::arrayInt(zp.data(), zp.size()));
+
+        // Check and add quantize/dequantize node before layer
+        std::vector<LayerPin> inpPins = ld.inputBlobsId;
+        for (int i = 0; i < inpPins.size(); i++)
+        {
+            LayerPin &pin = inpPins[i];
+            String inpLayerName = impl->getLayerName(pin.lid);
+            LayerData &inpLd = dstNet.impl->getLayerData(inpLayerName);
+            if (inpLd.dtype != ld.dtype)
+            {
+                LayerParams lp;
+                lp.set("scales", layerScales[pin.lid][pin.oid]);
+                lp.set("zeropoints", layerZeropoints[pin.lid][pin.oid]);
+                lp.name = inpLd.name + ((inpLd.dtype == CV_32F && ld.dtype == CV_8S) ? "/quantize/" : "/dequantize/") + ld.name;
+                lp.type = (inpLd.dtype == CV_32F && ld.dtype == CV_8S) ? "Quantize" : "Dequantize";
+                int newLid = dstNet.addLayer(lp.name, lp.type, ld.dtype, lp);
+                dstNet.connect(inpLd.id, pin.oid, newLid, 0);
+                pin.lid = newLid; pin.oid = 0;
+            }
+            else
+                pin.lid = inpLd.id;
+        }
+        // Add quantized layer to Net and connect to its inputs.
+        int newLid = dstNet.addLayer(ld.name, ld.type, ld.dtype, ld.params);
+        for( int i = 0; i < inpPins.size(); i++ )
+        {
+            dstNet.connect(inpPins[i].lid, inpPins[i].oid, newLid, i);
+        }
+        layerScales.push_back(sc);
+        layerZeropoints.push_back(zp);
+
+        // If the layer is a output layer, add quantize/dequantize node after it based on output's data type.
+        if (ld.requiredOutputs.size() == 0 && ld.dtype != outputsDtype)
+        {
+            LayerParams lp;
+            lp.set("scales", sc[0]);
+            lp.set("zeropoints", zp[0]);
+            lp.name = ((ld.dtype == CV_32F && outputsDtype == CV_8S) ? "quantize/" : "dequantize/") + ld.name;
+            lp.type = (ld.dtype == CV_32F && outputsDtype == CV_8S) ? "Quantize" : "Dequantize";
+            dstNet.addLayerToPrev(lp.name, lp.type, outputsDtype, lp);
         }
     }
-    dstNet.impl->setLayersOutputPrecision(inputsDtype, outputsDtype);
     dstNet.impl->netWasQuantized = true;
     return dstNet;
 }
 
-void Net::getInputDetails(std::vector<float>& scales, std::vector<int>& zeroPoints) const
+void Net::getInputDetails(std::vector<float>& scales, std::vector<int>& zeropoints) const
 {
     if (!impl->netWasQuantized)
         CV_Error(Error::StsBadFunc, "Net isn't quantized");
 
-    const int numInps = impl->netInputLayer->outNames.size();
-    // Data layer is skipped during quantization as it doesn't compute any outputs.
-    // So the Net's input scale and zero-point, required to quantize inputs from float to int8,
-    // are stored in the layers connected to the Data layer.
-    //
-    // 1. If 'n' layers are connected to the Data layer, we assume that their layer id ranges from 1, 2, ... , n.
-    //    Further, let the number of inputs be 'm'. It is not necessary that m == n. That's why the need
-    //    for 2 variables in the for loop to handle the cases of m > n (eg: 2 inputs connected to 1 elementwise layer)
-    //    or m < n (eg: 1 input shared by 2 conv layers)
-    // 2. It is assumed that all the layers connected to the Data layer have skip == false i.e they are not fused to any
-    //    other layer.
-    for (int layerId = 1, inpsHandled = 0; inpsHandled < numInps; layerId++)
+    LayerParams &lp = impl->layers[0].params;
+    DictValue sc = lp.get("scales");
+    DictValue zp = lp.get("zeropoints");
+
+    for (int i = 0; i < sc.size(); i++)
     {
-        LayerParams &lp = impl->layers[layerId].params;
-        DictValue inpSc = lp.get("input_scale");
-        DictValue inpZp = lp.get("input_zeropoint");
-        CV_Assert(inpSc.size() == inpZp.size());
-        for (int i = 0; i < inpSc.size(); i++)
-        {
-            scales.push_back(inpSc.get<float>(i));
-            zeroPoints.push_back(inpZp.get<int>(i));
-        }
-        inpsHandled += inpSc.size();
+        scales.push_back(sc.get<float>(i));
+        zeropoints.push_back(zp.get<int>(i));
     }
-    CV_Assert(scales.size() == numInps);
 }
 
-void Net::getInputDetails(float& scale, int& zeroPoint) const
-{
-    std::vector<float> scale_;
-    std::vector<int> zeroPoint_;
-    getInputDetails(scale_, zeroPoint_);
-    CV_CheckEQ(scale_.size(), (size_t)1, "Net has more than one inputs");
-    scale = scale_[0];
-    zeroPoint = zeroPoint_[0];
-}
-
-void Net::getOutputDetails(std::vector<float>& scales, std::vector<int>& zeroPoints) const
+void Net::getOutputDetails(std::vector<float>& scales, std::vector<int>& zeropoints) const
 {
     if (!impl->netWasQuantized)
         CV_Error(Error::StsBadFunc, "Net isn't quantized");
 
     std::vector<int> outLayerIds = getUnconnectedOutLayers();
-    // The output layer ids can be easily obtained, but an output can be fused to some previous layer.
-    // In such a case, the layer will have skip == true and the layer's scales and zero-points will be stored in
-    // the layer it is fused to. For now, only ReLU and ReLU6 activations connected to a Conv layer can be fused
-    // so the layer id of the conv layer can be found by subtracting the output's layer id with the number of outputs.
-    //
-    // We do not know which other quantized layers can support fusion, so the following method may or may not work
-    // for other fused layers. A better and more robust way to get the layer ids needs to be found.
     for (auto &lid : outLayerIds)
     {
         LayerParams &lp = impl->layers[lid].params;
-        if (!lp.has("output_scale"))
+        DictValue sc = lp.get("scales");
+        DictValue zp = lp.get("zeropoints");
+
+        for (int i = 0; i < sc.size(); i++)
         {
-            lp = impl->layers[lid - outLayerIds.size()].params;
-        }
-        DictValue outSc = lp.get("output_scale");
-        DictValue outZp = lp.get("output_zeropoint");
-        CV_Assert(outSc.size() == outZp.size());
-        for (int i = 0; i < outSc.size(); i++)
-        {
-            scales.push_back(outSc.get<float>(i));
-            zeroPoints.push_back(outZp.get<int>(i));
+            scales.push_back(sc.get<float>(i));
+            zeropoints.push_back(zp.get<int>(i));
         }
     }
-    // TODO : Check if scales.size() is equal to number of outputs for the Net. Cannot check with outLayerIds.size()
-    //        as 1 layer can have multiple outputs.
-}
-
-void Net::getOutputDetails(float& scale, int& zeroPoint) const
-{
-    std::vector<float> scale_;
-    std::vector<int> zeroPoint_;
-    getOutputDetails(scale_, zeroPoint_);
-    CV_CheckEQ(scale_.size(), (size_t)1, "Net has more than one outputs");
-    scale = scale_[0];
-    zeroPoint = zeroPoint_[0];
 }
 
 void Net::setPreferableBackend(int backendId)
@@ -5410,7 +5407,6 @@ Ptr<BackendNode> Layer::tryAttach(const Ptr<BackendNode>& node)
 
 bool Layer::setActivation(const Ptr<ActivationLayer>&) { return false; }
 bool Layer::tryFuse(Ptr<Layer>&) { return false; }
-bool Layer::tryQuantize() { return false; }
 void Layer::getScaleShift(Mat& scale, Mat& shift) const
 {
     scale = Mat();
@@ -5543,10 +5539,10 @@ void Layer::run(const std::vector<Mat> &inputs, std::vector<Mat> &outputs, std::
     this->forward(inputs, outputs, internals);
 }
 
-void Layer::quantize(const std::vector<std::vector<float> > &scales, const std::vector<std::vector<int> > &zeroPoints
-                     std::vector<Mat> &quantizedBlobs)
+bool Layer::tryQuantize(std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeropoints,
+                        LayerParams& params)
 {
-    this->quantize(scales, zeroPoints, quantizedBlobs);
+    return false;
 }
 
 Layer::~Layer() {}
