@@ -60,7 +60,7 @@ class PoolingLayerInt8Impl CV_FINAL : public PoolingLayerInt8
 public:
     PoolingLayerInt8Impl(const LayerParams& params)
     {
-        computeMaxIdx = true;
+        computeMaxIdx = false;
         globalPooling = false;
         isGlobalPooling = std::vector<bool>(3, false);
 
@@ -97,6 +97,7 @@ public:
         outputs_arr.getMatVector(outputs);
 
         CV_Assert(!inputs.empty());
+        CV_Assert(outputs.size() == 1);
 
         std::vector<int> inp;
         std::vector<int> out;
@@ -123,8 +124,6 @@ public:
             pads_begin.assign(1, pads_begin[0]);
             pads_end.assign(1, pads_end[0]);
         }
-
-        computeMaxIdx = type == MAX && outputs.size() == 2;
     }
 
     virtual bool supportBackend(int backendId) CV_OVERRIDE
@@ -154,9 +153,8 @@ public:
         {
             case MAX:
             {
-                CV_Assert_N(inputs.size() == 1, !computeMaxIdx || outputs.size() == 2);
-                Mat mask = computeMaxIdx ? outputs[1] : Mat();
-                maxPooling(inputs[0], outputs[0], mask);
+                CV_Assert_N(inputs.size() == 1, outputs.size() == 1);
+                maxPooling(inputs[0], outputs[0]);
                 break;
             }
             case AVE:
@@ -173,11 +171,10 @@ public:
     {
     public:
         const Mat* src, *rois;
-        Mat *dst, *mask;
+        Mat *dst;
         int pad_l, pad_t, pad_r, pad_b;
         bool avePoolPaddedArea;
         int nstripes, outZp;
-        bool computeMaxIdx;
         std::vector<int> ofsbuf;
         int poolingType;
         float spatialScale;
@@ -186,22 +183,21 @@ public:
         std::vector<size_t> kernel_size;
         std::vector<size_t> strides;
 
-        PoolingInvoker() : src(0), rois(0), dst(0), mask(0), pad_l(0), pad_t(0), pad_r(0), pad_b(0),
+        PoolingInvoker() : src(0), rois(0), dst(0), pad_l(0), pad_t(0), pad_r(0), pad_b(0),
                            avePoolPaddedArea(false), nstripes(0), outZp(0),
-                           computeMaxIdx(0), poolingType(MAX), spatialScale(0){}
+                           poolingType(MAX), spatialScale(0){}
 
-        static void run(const Mat& src, const Mat& rois, Mat& dst, Mat& mask,
+        static void run(const Mat& src, const Mat& rois, Mat& dst,
                         std::vector<size_t> kernel_size, std::vector<size_t> strides,
                         std::vector<size_t> pads_begin, std::vector<size_t> pads_end,
                         bool avePoolPaddedArea, int poolingType, float spatialScale,
-                        bool computeMaxIdx, int outZp, int nstripes)
+                        int outZp, int nstripes)
         {
             CV_Assert_N(
                       src.isContinuous(), dst.isContinuous(),
                       src.type() == CV_8S, src.type() == dst.type(),
                       src.dims == 3 || src.dims == 4 || src.dims == 5, dst.dims == 3 || dst.dims == 4 || dst.dims == 5,
-                      src.size[0] == dst.size[0], src.size[1] == dst.size[1], rois.empty(),
-                      mask.empty() || mask.size == dst.size);
+                      src.size[0] == dst.size[0], src.size[1] == dst.size[1], rois.empty());
 
             PoolingInvoker p;
 
@@ -217,7 +213,6 @@ public:
             p.pads_begin = pads_begin;
             p.pads_end = pads_end;
 
-            p.mask = &mask;
             p.pad_l = pads_begin.back();
             p.pad_t = isPool1D ? 0 : pads_begin[pads_begin.size() - 2];
             p.pad_r = pads_end.back();
@@ -226,25 +221,21 @@ public:
             p.avePoolPaddedArea = avePoolPaddedArea;
             p.nstripes = nstripes;
             p.outZp = outZp;
-            p.computeMaxIdx = computeMaxIdx;
             p.poolingType = poolingType;
             p.spatialScale = spatialScale;
 
-            if( !computeMaxIdx )
-            {
-                int height = isPool1D ? 1 : src.size[src.dims - 2];
-                int width = src.size[src.dims - 1];
+            int height = isPool1D ? 1 : src.size[src.dims - 2];
+            int width = src.size[src.dims - 1];
 
-                int kernel_d = isPool3D ? kernel_size[0] : 1;
-                int kernel_h = isPool1D ? 1 : kernel_size[kernel_size.size() - 2];
-                int kernel_w = kernel_size.back();
+            int kernel_d = isPool3D ? kernel_size[0] : 1;
+            int kernel_h = isPool1D ? 1 : kernel_size[kernel_size.size() - 2];
+            int kernel_w = kernel_size.back();
 
-                p.ofsbuf.resize(kernel_d * kernel_h * kernel_w);
-                for (int i = 0; i < kernel_d; ++i) {
-                    for (int j = 0; j < kernel_h; ++j) {
-                        for (int k = 0; k < kernel_w; ++k) {
-                            p.ofsbuf[i * kernel_h * kernel_w + j * kernel_w + k] = width * height * i + width * j + k;
-                        }
+            p.ofsbuf.resize(kernel_d * kernel_h * kernel_w);
+            for (int i = 0; i < kernel_d; ++i) {
+                for (int j = 0; j < kernel_h; ++j) {
+                    for (int k = 0; k < kernel_w; ++k) {
+                        p.ofsbuf[i * kernel_h * kernel_w + j * kernel_w + k] = width * height * i + width * j + k;
                     }
                 }
             }
@@ -279,13 +270,8 @@ public:
             int stride_d = isPool3D? strides[0] : 0;
             int stride_h = isPool1D? 1 :strides[strides.size() - 2];
             int stride_w = strides.back();
-            bool compMaxIdx = computeMaxIdx;
 
-#if CV_SIMD128
-            const int* ofsptr = ofsbuf.empty() ? 0 : (const int*)&ofsbuf[0];
-            if (poolingType == MAX && !compMaxIdx && !ofsptr)
-                CV_Error(Error::StsBadArg, "ofsbuf should be initialized in this mode");
-#endif
+            const int* ofsptr = (const int*)&ofsbuf[0];
 
             for( size_t ofs0 = stripeStart; ofs0 < stripeEnd; )
             {
@@ -319,7 +305,6 @@ public:
                 ystart = max(ystart, 0);
                 yend = min(yend, inp_height);
                 int8_t *dstData = &dst->ptr<int8_t>(n, c, d0)[y0 * width];
-                int *dstMaskData = mask->data ? &mask->ptr<int>(n, c, d0)[y0 * width] : 0;
 
                 int delta = std::min((int)(stripeEnd - ofs0), width - x0);
                 ofs0 += delta;
@@ -334,12 +319,10 @@ public:
                         if (xstart >= xend || ystart >= yend)
                         {
                             dstData[x0] = (int8_t)outZp;
-                            if (compMaxIdx && dstMaskData)
-                                dstMaskData[x0] = -1;
                             continue;
                         }
 #if CV_SIMD128
-                        if( isPool2D && !compMaxIdx && xstart > 0 && x0 + 15 < x1 && (x0 + 15) * stride_w - pad_l + kernel_w < inp_width )
+                        if( isPool2D && xstart > 0 && x0 + 15 < x1 && (x0 + 15) * stride_w - pad_l + kernel_w < inp_width )
                         {
                             v_int8x16 max_val0 = v_setall_s8(-128);
                             if( yend - ystart == kernel_h )
@@ -408,49 +391,21 @@ public:
                             const int* last = (const int*)srcData + xend;
                             const int* max_elem = std::max_element(first, last);
                             if (max_elem != last)
-                            {
                                 dstData[x0] = int8_t(*max_elem);
-                                if( compMaxIdx && dstMaskData )
-                                {
-                                    dstMaskData[x0] = std::distance(first, max_elem);
-                                }
-                            }
                         }
                         else
                         {
                             int8_t max_val = -128;
-                            if( compMaxIdx )
-                            {
-                                int max_index = -1;
-                                for (int d = dstart; d < dend; ++d)
-                                    for (int y = ystart; y < yend; ++y)
-                                        for (int x = xstart; x < xend; ++x)
-                                        {
-                                            const int index = d * inp_width * inp_height + y * inp_width + x;
-                                            int8_t val = srcData[index];
-                                            if (val > max_val)
-                                            {
-                                                max_val = val;
-                                                max_index = index;
-                                            }
-                                        }
-                                dstData[x0] = max_val;
-                                if (dstMaskData)
-                                    dstMaskData[x0] = max_index;
-                            }
-                            else
-                            {
-                                for (int d = dstart; d < dend; ++d) {
-                                    for (int y = ystart; y < yend; ++y) {
-                                        for (int x = xstart; x < xend; ++x) {
-                                            const int index = d * inp_width * inp_height + y * inp_width + x;
-                                            int8_t val = srcData[index];
-                                            max_val = std::max(max_val, val);
-                                        }
+                            for (int d = dstart; d < dend; ++d) {
+                                for (int y = ystart; y < yend; ++y) {
+                                    for (int x = xstart; x < xend; ++x) {
+                                        const int index = d * inp_width * inp_height + y * inp_width + x;
+                                        int8_t val = srcData[index];
+                                        max_val = std::max(max_val, val);
                                     }
                                 }
-                                dstData[x0] = max_val;
                             }
+                            dstData[x0] = max_val;
                         }
                     }
                 else if (poolingType == AVE)
@@ -530,18 +485,18 @@ public:
         }
     };
 
-    void maxPooling(Mat &src, Mat &dst, Mat &mask)
+    void maxPooling(Mat &src, Mat &dst)
     {
         const int nstripes = getNumThreads();
         Mat rois;
-        PoolingInvoker::run(src, rois, dst, mask, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type, spatialScale, computeMaxIdx, output_zp, nstripes);
+        PoolingInvoker::run(src, rois, dst, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type, spatialScale, output_zp, nstripes);
     }
 
     void avePooling(Mat &src, Mat &dst)
     {
         const int nstripes = getNumThreads();
-        Mat rois, mask;
-        PoolingInvoker::run(src, rois, dst, mask, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type, spatialScale, computeMaxIdx, output_zp, nstripes);
+        Mat rois;
+        PoolingInvoker::run(src, rois, dst, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type, spatialScale, output_zp, nstripes);
     }
 
     bool getMemoryShapes(const std::vector<MatShape> &inputs,
@@ -593,11 +548,7 @@ public:
                                  std::vector<size_t>(local_kernel.size(), 1), outShape);
         }
 
-        int numOutputs = requiredOutputs ? requiredOutputs : (type == MAX ? 2 : 1);
-        CV_Assert(numOutputs == 1 || (numOutputs == 2 && type == MAX));
-
-        outputs.assign(numOutputs, outShape);
-
+        outputs.assign(1, outShape);
         return false;
     }
 

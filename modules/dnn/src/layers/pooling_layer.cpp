@@ -1330,7 +1330,7 @@ public:
     virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
                              std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
-        if (type == MAX || type == AVE)
+        if ((type == MAX && !computeMaxIdx) || type == AVE)
         {
             scales[1] = scales[0];
             zeropoints[1] = zeropoints[0];

@@ -181,17 +181,20 @@ TEST_P(Test_Int8_layers, AvePooling)
 
 TEST_P(Test_Int8_layers, MaxPooling)
 {
+    testLayer("pool_conv_1d", "ONNX", 0.0005, 0.0013);
+    testLayer("pool_conv_3d", "ONNX", 0.00426, 0.0118);
+
+    /* All the below tests have MaxPooling as last layer, so computeMaxIdx is set to true
+       which is not supported by int8 maxpooling.
     testLayer("max_pool_even", "TensorFlow", 0.0062, 0.0184);
     testLayer("max_pool_odd_valid", "TensorFlow", 0.0064, 0.0133);
     testLayer("conv_pool_nchw", "TensorFlow", 0.009, 0.033);
     testLayer("max_pool3d", "TensorFlow", 0.0047, 0.012);
     testLayer("maxpooling_1d", "ONNX", 0.0042, 0.0062);
     testLayer("two_maxpooling_1d", "ONNX", 0.0047, 0.0097);
-    testLayer("pool_conv_1d", "ONNX", 0.0005, 0.0013);
     testLayer("maxpooling", "ONNX", 0.0069, 0.0115);
     testLayer("two_maxpooling", "ONNX", 0.0049, 0.0097);
-    testLayer("pool_conv_3d", "ONNX", 0.00426, 0.0118);
-    testLayer("max_pool3d", "ONNX", 0.0069, 0.0112);
+    testLayer("max_pool3d", "ONNX", 0.0069, 0.0112);*/
 }
 
 // TODO : skip this test for all other backends except OpenCV/CPU.
