@@ -81,7 +81,7 @@ void fastGEMM1T( const int8_t* vec, const int8_t* weights,
         return _##func##_add_epi32(_##func##_add_epi32(prod0, prod1), c);      \
     }
 OPENCV_FMADD_EPI8(__m256i, mm256)
-OPENCV_FMADD_EPI8(__m512i, mm512)
+//OPENCV_FMADD_EPI8(__m512i, mm512)
 
 #define OPENCV_QUANT_OUTPUT_STAGE(_Tpvec, func) \
     inline _Tpvec OutputStage(const _Tpvec& accum, const _Tpvec& mult, const int& outZp) \
@@ -169,6 +169,7 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                     vs20 = _mm256_setzero_si256(), vs21 = _mm256_setzero_si256(),
                     vs22 = _mm256_setzero_si256(), vs23 = _mm256_setzero_si256();
 
+            /* TODO : Fix AVX-512 path. Segmentation fault in Conv2D Tests.
 #if CV_AVX512_SKX // AVX512VL is necessary to avoid register spilling
             if (vecsize >= 64)
             {
@@ -205,10 +206,9 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                     vs13_5 = _mm512_fmaddepi8_epi32(w1, r0, vs13_5);
                     vs23_5 = _mm512_fmaddepi8_epi32(w2, r0, vs23_5);
                 }
-                /*
-                 * now fold the 512 bit accumulator vectors into 256 bit vectors so that the AVX2 code can finish
-                 * the tail of the vector
-                 */
+
+                // now fold the 512 bit accumulator vectors into 256 bit vectors so that the AVX2 code can finish
+                // the tail of the vector
 
                 vs00 = _mm256_add_epi32( _mm512_extracti32x8_epi32(vs00_5, 0), _mm512_extracti32x8_epi32(vs00_5, 1));
                 vs10 = _mm256_add_epi32( _mm512_extracti32x8_epi32(vs10_5, 0), _mm512_extracti32x8_epi32(vs10_5, 1));
@@ -227,6 +227,7 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                 vs23 = _mm256_add_epi32( _mm512_extracti32x8_epi32(vs23_5, 0), _mm512_extracti32x8_epi32(vs23_5, 1));
             }
 #endif
+            */
             for (; k < vecsize; k += 32, rptr += 32 )
             {
                 __m256i w0 = _mm256_load_si256((const __m256i*)(wptr0 + k));

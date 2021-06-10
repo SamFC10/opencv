@@ -913,7 +913,7 @@ public:
                         // and im2row-transformed part of the tensor
                     #if CV_TRY_AVX512_SKX
                         if(useAVX512)
-                            opt_AVX512_SKX::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
+                            opt_AVX2::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
                                           outShape, bsz, vsz, vsz_a, outZp, multptr, relu,
                                           cn0 == 0, cn1 == inpCn);
                         else

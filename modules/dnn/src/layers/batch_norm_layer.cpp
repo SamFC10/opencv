@@ -35,6 +35,7 @@ namespace dnn
 class BatchNormLayerImpl CV_FINAL : public BatchNormLayer
 {
 public:
+    Mat origin_weights, origin_bias;
     Mat weights_, bias_;
     UMat umat_weight, umat_bias;
     mutable int dims;
@@ -88,11 +89,11 @@ public:
         const float* weightsData = hasWeights ? blobs[weightsBlobIndex].ptr<float>() : 0;
         const float* biasData = hasBias ? blobs[biasBlobIndex].ptr<float>() : 0;
 
-        weights_.create(1, (int)n, CV_32F);
-        bias_.create(1, (int)n, CV_32F);
+        origin_weights.create(1, (int)n, CV_32F);
+        origin_bias.create(1, (int)n, CV_32F);
 
-        float* dstWeightsData = weights_.ptr<float>();
-        float* dstBiasData = bias_.ptr<float>();
+        float* dstWeightsData = origin_weights.ptr<float>();
+        float* dstBiasData = origin_bias.ptr<float>();
 
         for (size_t i = 0; i < n; ++i)
         {
@@ -104,6 +105,8 @@ public:
 
     virtual void finalize(InputArrayOfArrays, OutputArrayOfArrays) CV_OVERRIDE
     {
+        origin_weights.reshape(1, 1).copyTo(weights_);
+        origin_bias.reshape(1, 1).copyTo(bias_);
     }
 
     void getScaleShift(Mat& scale, Mat& shift) const CV_OVERRIDE
