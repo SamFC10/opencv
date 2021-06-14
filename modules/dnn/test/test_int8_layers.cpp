@@ -197,6 +197,35 @@ TEST_P(Test_Int8_layers, MaxPooling)
     testLayer("max_pool3d", "ONNX", 0.0069, 0.0112);*/
 }
 
+TEST_P(Test_Int8_layers, ReLU)
+{
+    testLayer("layer_relu", "Caffe", 0.001, 0.004);
+    testLayer("ReLU", "ONNX", 0.0025, 0.012);
+}
+
+TEST_P(Test_Int8_layers, LeakyReLU)
+{
+    testLayer("leaky_relu", "TensorFlow", 0.0002, 0.0004);
+}
+
+TEST_P(Test_Int8_layers, ReLU6)
+{
+    testLayer("keras_relu6", "TensorFlow", 0.0036, 0.0092);
+    testLayer("keras_relu6", "TensorFlow", 0.0036, 0.0092, 1, 1, false, true, true);
+}
+
+TEST_P(Test_Int8_layers, Sigmoid)
+{
+    testLayer("maxpooling_sigmoid", "ONNX", 0.0013, 0.0046);
+    testLayer("maxpooling_sigmoid_dynamic_axes", "ONNX", 0.00132, 0.0042);
+    testLayer("maxpooling_sigmoid_1d", "ONNX", 0.00121, 0.0037);
+}
+
+TEST_P(Test_Int8_layers, Mish)
+{
+    testLayer("mish", "ONNX", 0.0015, 0.0025);
+}
+
 // TODO : skip this test for all other backends except OpenCV/CPU.
 INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_layers, dnnBackendsAndTargets());
 }} // namespace

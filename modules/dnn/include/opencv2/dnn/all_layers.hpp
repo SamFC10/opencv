@@ -474,7 +474,11 @@ CV__DNN_INLINE_NS_BEGIN
     {
     public:
         virtual void forwardSlice(const float* src, float* dst, int len,
-                                  size_t outPlaneSize, int cn0, int cn1) const = 0;
+                                  size_t outPlaneSize, int cn0, int cn1) const {};
+        virtual void forwardSlice(const int* src, const int* lut, int* dst, int len,
+                                  size_t outPlaneSize, int cn0, int cn1) const {};
+        virtual void forwardSlice(const int8_t* src, const int8_t* lut, int8_t* dst, int len,
+                                  size_t outPlaneSize, int cn0, int cn1) const {};
     };
 
     class CV_EXPORTS ReLULayer : public ActivationLayer
@@ -555,6 +559,12 @@ CV__DNN_INLINE_NS_BEGIN
         float base, scale, shift;
 
         static Ptr<ExpLayer> create(const LayerParams &params);
+    };
+
+    class CV_EXPORTS ActivationLayerInt8 : public ActivationLayer
+    {
+    public:
+        static Ptr<ActivationLayerInt8> create(const LayerParams &params);
     };
 
     /* Layers used in semantic segmentation */

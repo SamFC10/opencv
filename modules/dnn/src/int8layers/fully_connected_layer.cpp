@@ -113,23 +113,25 @@ public:
 
     virtual bool setActivation(const Ptr<ActivationLayer>& layer) CV_OVERRIDE
     {
-        if (activ.empty() || layer.empty())
+        Ptr<ActivationLayerInt8> activ_int8 = layer.dynamicCast<ActivationLayerInt8>();
+        if (!activ_int8.empty())
         {
-            activ = layer;
-            return !activ.empty();
+            activ = activ_int8;
+            if (!activ_int8->blobs.empty())
+                activ_int8->blobs[0].convertTo(activationLUT, CV_32S);
+            return true;
         }
-        else
-            return false;
+        return false;
     }
 
     class FullyConnected : public ParallelLoopBody
     {
     public:
-        FullyConnected() : srcMat(0), weights(0), biasMat(0), additionalParams(0), activ(0), dstMat(0), nstripes(0), outZp(0),
-                           useAVX(false), useAVX2(false), useAVX512(false) {}
+        FullyConnected() : srcMat(0), weights(0), biasMat(0), additionalParams(0), activationLUT(0), activ(0),
+                           dstMat(0), nstripes(0), outZp(0), useAVX(false), useAVX2(false), useAVX512(false) {}
 
         static void run(const Mat& srcMat, const Mat& weights, const Mat& biasMat, const Mat& additionalParams,
-                        Mat& dstMat, const ActivationLayer* activ, int nstripes, int outZp)
+                        const Mat& activationLUT, Mat& dstMat, const ActivationLayerInt8* activ, int nstripes, int outZp)
         {
             CV_Assert( srcMat.dims == 2 && srcMat.cols == weights.cols &&
                        dstMat.rows == srcMat.rows && dstMat.cols == weights.rows &&
@@ -143,10 +145,11 @@ public:
             p.weights = &weights;
             p.biasMat = &biasMat;
             p.additionalParams = &additionalParams;
+            p.activationLUT = &activationLUT;
             p.dstMat = &dstMat;
             p.nstripes = nstripes;
             p.outZp = outZp;
-            p.activ = activ;
+            p.activ = !activationLUT.empty() ? activ : 0;
             p.useAVX = checkHardwareSupport(CPU_AVX);
             p.useAVX2 = checkHardwareSupport(CPU_AVX2);
             p.useAVX512 = CV_CPU_HAS_SUPPORT_AVX512_SKX;
@@ -168,6 +171,7 @@ public:
             size_t wstep = weights->step1();
             AutoBuffer<int8_t> srcbuf(vecsize_aligned + valign);
             int8_t* sptr = alignPtr(srcbuf.data(), (int)(valign*sizeof(int8_t)));
+            const int* lutptr = !activationLUT->empty() ? activationLUT->ptr<int>() : 0;
 
             for( k = vecsize; k < vecsize_aligned; k++ )
                 sptr[k] = 0;
@@ -235,15 +239,15 @@ public:
                     }
                 }
 
-                /*if(activ)
-                    activ->forwardSlice(dptr, dptr, 1, 1, delta, delta + nw);*/
+                if(activ)
+                    activ->forwardSlice(dptr, lutptr, dptr, 1, 1, delta, delta + nw);
 
                 ofs += nw;
             }
         }
 
-        const Mat *srcMat, *weights, *biasMat, *additionalParams;
-        const ActivationLayer* activ;
+        const Mat *srcMat, *weights, *biasMat, *additionalParams, *activationLUT;
+        const ActivationLayerInt8* activ;
         Mat* dstMat;
         int nstripes, outZp;
         bool useAVX;
@@ -268,7 +272,7 @@ public:
         Mat dstMatInt32= Mat(shape(dstMat), CV_32S);
 
         const int nstripes = getNumThreads();
-        FullyConnected::run(srcMat, weightsMat, biasMat, blobs[2], dstMatInt32, activ.get(), nstripes, output_zp);
+        FullyConnected::run(srcMat, weightsMat, biasMat, blobs[2], activationLUT, dstMatInt32, activ.get(), nstripes, output_zp);
         dstMatInt32.convertTo(dstMat, CV_8S);
     }
 
@@ -288,8 +292,8 @@ public:
 
     }
 
-    Mat weightsMat, biasMat;
-    Ptr<ActivationLayer> activ;
+    Mat weightsMat, biasMat, activationLUT;
+    Ptr<ActivationLayerInt8> activ;
 };
 
 Ptr<InnerProductLayerInt8> InnerProductLayerInt8::create(const LayerParams& params)

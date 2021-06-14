@@ -1365,11 +1365,12 @@ struct Net::Impl : public detail::NetImplBase
 
             currLayer->unsetAttached();
         }
-
+        netWasAllocated = false;
         layersTimings.clear();
     }
 
-    void setUpNet(const std::vector<LayerPin>& blobsToKeep_ = std::vector<LayerPin>())
+    void setUpNet(const std::vector<LayerPin>& blobsToKeep_ = std::vector<LayerPin>(),
+                  bool setUpForQuantization = false)
     {
         CV_TRACE_FUNCTION();
 
@@ -1460,7 +1461,7 @@ struct Net::Impl : public detail::NetImplBase
 
             this->blobsToKeep = blobsToKeep_;
 
-            allocateLayers(blobsToKeep_);
+            allocateLayers(blobsToKeep_, setUpForQuantization);
 
             MapIdToLayerData::iterator it = layers.find(0);
             CV_Assert(it != layers.end());
@@ -2568,7 +2569,7 @@ struct Net::Impl : public detail::NetImplBase
 #define printf_(args)
 #endif
 
-    void fuseLayers(const std::vector<LayerPin>& blobsToKeep_)
+    void fuseLayers(const std::vector<LayerPin>& blobsToKeep_, bool setUpForQuantization)
     {
         CV_TRACE_FUNCTION();
 
@@ -2658,6 +2659,18 @@ struct Net::Impl : public detail::NetImplBase
                         nextData->type != "TanH" &&
                         nextData->type != "Power")
                         break;
+
+                    // Activations must not be fused to compute the correct lookup-tables for int8 activations.
+                    if (setUpForQuantization && (currLayer->type == "Convolution" || currLayer->type == "InnerProduct"))
+                    {
+                        if ((nextData->type == "ReLU" && nextData->params.get<float>("negative_slope", 0.f) == 0.f) ||
+                             nextData->type == "ReLU6")
+                        {
+                            // Can be fused as lookup-tables are not needed
+                        }
+                        else
+                            break;
+                    }
 
                     Ptr<ActivationLayer> nextActivLayer = nextData->layerInstance.dynamicCast<ActivationLayer>();
                     if (nextActivLayer.empty())
@@ -3114,7 +3127,7 @@ struct Net::Impl : public detail::NetImplBase
         }
     }
 
-    void allocateLayers(const std::vector<LayerPin>& blobsToKeep_)
+    void allocateLayers(const std::vector<LayerPin>& blobsToKeep_, bool setUpForQuantization)
     {
         CV_TRACE_FUNCTION();
 
@@ -3170,7 +3183,7 @@ struct Net::Impl : public detail::NetImplBase
         }
 
         layersTimings.resize(lastLayerId + 1, 0);
-        fuseLayers(blobsToKeep_);
+        fuseLayers(blobsToKeep_, setUpForQuantization);
     }
 
     void forwardLayer(LayerData &ld)
@@ -3485,17 +3498,18 @@ struct Net::Impl : public detail::NetImplBase
 
         if (ld.skip)
         {
-            LayerData &inpld = layers[ld.inputBlobsId[0].lid];
-            if ((inpld.type == "Convolution" && (ld.type == "ReLU" || ld.type == "ReLU6" || ld.type == "BatchNorm")) ||
-                (inpld.type == "InnerProduct" && (ld.type == "ReLU" || ld.type == "ReLU6")) ||
-                (inpld.type == "BatchNorm" && inpld.skip && (ld.type == "ReLU" || ld.type == "ReLU6")))
-            {
-                ld.dtype = CV_8S;
-            }
-            else if (ld.type == "Concat")
+            if (ld.type == "Concat")
             {
                 scales.clear(); zeropoints.clear();
                 getQuantizationParams(ld.outputBlobs[0], "MinMax", scales, zeropoints);
+                return;
+            }
+
+            LayerData &inpld = layers[ld.inputBlobsId[0].lid];
+            if (inpld.type != "Eltwise" && inpld.type != "MVN")
+            {
+                ld.type += ((ld.type == "ReLU" || ld.type == "ReLU6") ? "Int8" : "");
+                ld.dtype = CV_8S;
             }
             return;
         }
@@ -4342,6 +4356,7 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
         CV_Error(Error::StsBadArg, "Cannot quantize a quantized net");
 
     // Set-up floating point Net with calibration data as input.
+    impl->clear();
     if (calibData.isMat())
     {
         setInput(calibData.getMat());
@@ -4366,7 +4381,7 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
     {
         pins.push_back(impl->getPinByAlias(outNames[i]));
     }
-    impl->setUpNet(pins);
+    impl->setUpNet(pins, true);
 
     // Floating point Net set-up done. Prepare quantized Net.
     Net dstNet;
@@ -4442,6 +4457,7 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
         }
     }
     dstNet.impl->netWasQuantized = true;
+    impl->clear();
     return dstNet;
 }
 

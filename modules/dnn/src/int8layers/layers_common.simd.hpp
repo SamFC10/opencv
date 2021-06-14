@@ -49,8 +49,7 @@ CV_CPU_OPTIMIZATION_NAMESPACE_BEGIN
 void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                const int8_t* rowbuf, int* output, const int* outShape,
                int blockSize, int vecsize, int vecsize_aligned, int outZp,
-               const int* multiplier, const float* relu,
-               bool initOutput, bool finalOutput );
+               const int* multiplier, bool initOutput, bool finalOutput );
 void fastDepthwiseConv( const int8_t* wptr,
                         int kernel_h, int kernel_w,
                         int stride_h, int stride_w,
@@ -109,8 +108,7 @@ enum { FASCONV_BASE_VECSZ = 4 };
 void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                const int8_t* rowbuf, int* output, const int* outShape,
                int blockSize, int vecsize, int vecsize_aligned, int outZp,
-               const int* multiplier, const float* relu,
-               bool initOutput, bool finalOutput )
+               const int* multiplier, bool initOutput, bool finalOutput )
 {
     int outCn = outShape[1];
     size_t outPlaneSize = outShape[2]*outShape[3];
@@ -443,7 +441,7 @@ void fastDepthwiseConv( const int8_t* wptr,
         const int8_t* imgptr2 = imgptr0 + (dilation_h*2)*width;
         int8_t w00 = w00_, w01 = w01_, w02 = w02_;
         int8_t w20 = w20_, w21 = w21_, w22 = w22_;
-        int out, out1;
+        int out;
         biasCopy = bias;
         if (in_i < 0)
         {
@@ -464,8 +462,7 @@ void fastDepthwiseConv( const int8_t* wptr,
                   (int)imgptr1[0]*w11 + (int)imgptr1[dilation_w]*w12 +
                   (int)imgptr2[0]*w21 + (int)imgptr2[dilation_w]*w22 +
                   biasCopy + inpZp*(w00 + w10 + w20);
-            out1 = outZp + ((out*mult + (1 << 21)) >> 22);
-            outptr[0] = std::min(std::max(out1, -128), 127);
+            outptr[0] = OutputStage(out, mult, outZp);
             out_j = 1;
         }
 
@@ -560,8 +557,7 @@ void fastDepthwiseConv( const int8_t* wptr,
             out = (int)imgptr0[in_j]*w00 + (int)imgptr0[in_j + dilation_w]*w01 + (int)imgptr0[in_j + dilation_w*2]*w02 +
                   (int)imgptr1[in_j]*w10 + (int)imgptr1[in_j + dilation_w]*w11 + (int)imgptr1[in_j + dilation_w*2]*w12 +
                   (int)imgptr2[in_j]*w20 + (int)imgptr2[in_j + dilation_w]*w21 + (int)imgptr2[in_j + dilation_w*2]*w22 + biasCopy;
-            out1 = outZp + ((out*mult + (1 << 21)) >> 22);
-            outptr[out_j] = std::min(std::max(out1, -128), 127);
+            outptr[out_j] = OutputStage(out, mult, outZp);
         }
 
         for (; out_j < outW; out_j++ )
@@ -589,8 +585,7 @@ void fastDepthwiseConv( const int8_t* wptr,
             out = (int)imgptr0[in_j0]*w00*s0 + (int)imgptr0[in_j1]*w01*s1 + (int)imgptr0[in_j2]*w02*s2 +
                   (int)imgptr1[in_j0]*w10*s0 + (int)imgptr1[in_j1]*w11*s1 + (int)imgptr1[in_j2]*w12*s2 +
                   (int)imgptr2[in_j0]*w20*s0 + (int)imgptr2[in_j1]*w21*s1 + (int)imgptr2[in_j2]*w22*s2 + biasCopy;
-            out1 = outZp + ((out*mult + (1 << 21)) >> 22);
-            outptr[out_j] = std::min(std::max(out1, -128), 127);
+            outptr[out_j] = OutputStage(out, mult, outZp);
         }
     }
     _mm256_zeroupper();

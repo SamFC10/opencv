@@ -147,6 +147,15 @@ void initializeLayerFactory()
     CV_DNN_REGISTER_LAYER_CLASS(PoolingInt8,      PoolingLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(FlattenInt8,      FlattenLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(PaddingInt8,      PaddingLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(ReLUInt8,         ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(ReLU6Int8,        ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(SigmoidInt8,      ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(TanHInt8,         ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(SwishInt8,        ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(MishInt8,         ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(ELUInt8,          ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(BNLLInt8,         ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(AbsValInt8,       ActivationLayerInt8);
 }
 
 CV__DNN_INLINE_NS_END

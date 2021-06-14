@@ -152,9 +152,10 @@ public:
 
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
     {
-        // BatchNorm Layer can be fused as its weights are already fused and quantized with convolution layer's weights.
+        // BatchNorm ans/or Scale layer can be fused as its weights are already fused and quantized with convolution layer's weights.
         Ptr<BatchNormLayer> batchnorm_layer = top.dynamicCast<BatchNormLayer>();
-        if (batchnorm_layer)
+        Ptr<ScaleLayer> scale_layer = top.dynamicCast<ScaleLayer>();
+        if (batchnorm_layer || scale_layer)
             return true;
 
         return false;
@@ -168,8 +169,8 @@ public:
     enum { VEC_ALIGN = 32, DFT_TYPE = CV_8S };
     Mat weightsMat;
     std::vector<int> biasvec;
-    std::vector<float> reluslope;
-    Ptr<ActivationLayer> activ;
+    Mat activationLUT;
+    Ptr<ActivationLayerInt8> activ;
 
     ConvolutionLayerInt8Impl(const LayerParams &params) : BaseConvolutionLayerInt8Impl(params){}
 
@@ -262,18 +263,17 @@ public:
         biasvec[numOutput] = biasvec[numOutput+1] = biasvec[numOutput-1];
     }
 
-    // TODO : For now, leaving this function as it is. Once int8 activation layers are implemented, modify this function to fuse
-    //        activations with convolution layer.
     bool setActivation(const Ptr<ActivationLayer>& layer) CV_OVERRIDE
     {
-        if ((!activ.empty() && !layer.empty()) || blobs.empty())
-            return false;
-
-        activ = layer;
-        if (activ.empty())
-            reluslope.clear();
-
-        return !activ.empty();
+        Ptr<ActivationLayerInt8> activ_int8 = layer.dynamicCast<ActivationLayerInt8>();
+        if (!activ_int8.empty())
+        {
+            activ = activ_int8;
+            if (!activ_int8->blobs.empty())
+                activ_int8->blobs[0].convertTo(activationLUT, CV_32S);
+            return true;
+        }
+        return false;
     }
 
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
@@ -294,8 +294,8 @@ public:
         int ngroups_, nstripes_;
         std::vector<int> ofstab_;
         const std::vector<int>* biasvec_;
-        const std::vector<float>* reluslope_;
-        const ActivationLayer* activ_;
+        const Mat* activLUT_;
+        const ActivationLayerInt8* activ_;
         bool is1x1_;
         bool useAVX;
         bool useAVX2;
@@ -306,17 +306,16 @@ public:
 
         ParallelConv()
             : input_(0), weights_(0), output_(0), ngroups_(0), nstripes_(0),
-              biasvec_(0), reluslope_(0), activ_(0), is1x1_(false), useAVX(false), useAVX2(false), useAVX512(false)
+              biasvec_(0), activLUT_(0), activ_(0), is1x1_(false), useAVX(false), useAVX2(false), useAVX512(false)
             , blk_size_cn(0), inpZp(0), outZp(0), multiplier(0)
         {}
 
         static void run( const Mat& input, Mat& output, const Mat& weights, const Mat& additionalParams,
-                         const std::vector<int>& biasvec,
-                         const std::vector<float>& reluslope,
+                         const std::vector<int>& biasvec, const Mat& activLUT,
                          const std::vector<size_t>& kernel_size, const std::vector<size_t>& strides,
                          const std::vector<size_t>& pads_begin, const std::vector<size_t>& pads_end,
                          const std::vector<size_t>& dilations,
-                         const ActivationLayer* activ, int ngroups, int nstripes, int inp_Zp, int out_Zp)
+                         const ActivationLayerInt8* activ, int ngroups, int nstripes, int inp_Zp, int out_Zp)
         {
             size_t karea = std::accumulate(kernel_size.begin(), kernel_size.end(),
                                            1, std::multiplies<size_t>());
@@ -411,8 +410,8 @@ public:
             }
 
             p.biasvec_ = &biasvec;
-            p.reluslope_ = &reluslope;
-            p.activ_ = p.reluslope_->empty() ? activ : 0;
+            p.activLUT_ = &activLUT;
+            p.activ_ = !activLUT.empty() ? activ : 0;
 
             parallel_for_(Range(0, nstripes), p, nstripes);
         }
@@ -490,7 +489,7 @@ public:
             const int8_t* wptr_orig_ = weights_->ptr<int8_t>();
             size_t wstep = weights_->step1();
             const int* biasptr_ = &biasvec_->at(0);
-            const float* reluptr_ = reluslope_->empty() ? 0 : &reluslope_->at(0);
+            const int* lutptr_ = !activLUT_->empty() ? activLUT_->ptr<int>() : 0;
             int* data_out0_ = output_->ptr<int>();
             AutoBuffer<int8_t> rowbuf0_;
             int8_t* rowbuf0 = 0;
@@ -536,8 +535,6 @@ public:
                     int ncn = cn1 - cn0, vsz = karea*ncn;
                     int vsz_a = (int)alignSize(vsz, valign);
                     const int8_t* wptr = wptr_orig + cn0*karea;
-                    // we apply [Channels][P]ReLU (if any) during the final pass only.
-                    const float* relu = cn1 == inpCn && reluptr_ ? reluptr_ + startOutCn : 0;
 
                     for( int ofs0 = stripeStart; ofs0 < stripeEnd; ofs0 += blk_size )
                     {
@@ -914,15 +911,13 @@ public:
                     #if CV_TRY_AVX512_SKX
                         if(useAVX512)
                             opt_AVX2::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
-                                          outShape, bsz, vsz, vsz_a, outZp, multptr, relu,
-                                          cn0 == 0, cn1 == inpCn);
+                                          outShape, bsz, vsz, vsz_a, outZp, multptr, cn0 == 0, cn1 == inpCn);
                         else
                     #endif
                     #if CV_TRY_AVX2
                         if(useAVX2)
                             opt_AVX2::fastConv(wptr, wstep, biasptr, rowbuf0, data_out0 + ofs0,
-                                          outShape, bsz, vsz, vsz_a, outZp, multptr, relu,
-                                          cn0 == 0, cn1 == inpCn);
+                                          outShape, bsz, vsz, vsz_a, outZp, multptr, cn0 == 0, cn1 == inpCn);
                         else
                     #endif
                         for( int i = 0; i < outCn; i += 2 )
@@ -1030,10 +1025,10 @@ public:
                         }
                     }
                 }
-                /*if( activ_ )
-                    activ_->forwardSlice(data_out0 + stripeStart, data_out0 + stripeStart,
-                                         (int)(stripeEnd - stripeStart),
-                                         outPlaneSize, startOutCn, startOutCn + outCn);*/
+                if( activ_ )
+                    activ_->forwardSlice(data_out0 + stripeStart, lutptr_,
+                                         data_out0 + stripeStart, (int)(stripeEnd - stripeStart),
+                                         outPlaneSize, startOutCn, startOutCn + outCn);
             }
         }
     };
@@ -1067,7 +1062,6 @@ public:
                    stride.width, stride.height, dilation.width, dilation.height);
         }*/
 
-        int outCn = blobs[0].size[0];
         int inpGroupCn = blobs[0].size[1];
         CV_Assert_N(inputs.size() == (size_t)1, inputs[0].size[1] % inpGroupCn == 0,
                     outputs.size() == 1, inputs[0].data != outputs[0].data);
@@ -1075,30 +1069,10 @@ public:
         int ngroups = inputs[0].size[1] / inpGroupCn;
         CV_Assert(outputs[0].size[1] % ngroups == 0);
 
-        reluslope.clear();
-        if( activ )
-        {
-            Ptr<ReLULayer> activ_relu = activ.dynamicCast<ReLULayer>();
-            if( !activ_relu.empty() )
-            {
-                reluslope.assign(outCn+2, activ_relu->negativeSlope);
-            }
-
-            Ptr<ChannelsPReLULayer> activ_chprelu = activ.dynamicCast<ChannelsPReLULayer>();
-            if( !activ_chprelu.empty() )
-            {
-                const Mat& m = activ_chprelu->blobs[0];
-                CV_Assert(m.isContinuous() && m.type() == CV_32F && (int)m.total() == outCn);
-                const float* mdata = m.ptr<float>();
-                reluslope.resize(outCn+2);
-                std::copy(mdata, mdata + outCn, reluslope.begin());
-                reluslope[outCn] = reluslope[outCn+1] = reluslope[outCn-1];
-            }
-        }
         int nstripes = std::max(getNumThreads(), 1);
         Mat outputInt32 = Mat(shape(outputs[0]), CV_32S);
 
-        ParallelConv::run(inputs[0], outputInt32, weightsMat, blobs[2], biasvec, reluslope, kernel_size, strides,
+        ParallelConv::run(inputs[0], outputInt32, weightsMat, blobs[2], biasvec, activationLUT, kernel_size, strides,
                           pads_begin, pads_end, dilations, activ.get(), ngroups, nstripes, input_zp, output_zp);
 
         outputInt32.convertTo(outputs[0], CV_8S);
