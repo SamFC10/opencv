@@ -55,6 +55,33 @@ namespace cv
 namespace dnn
 {
 
+#if CV_SIMD
+static inline void v_expand_mul_add(const v_int8x16& a, const v_int8x16& b,
+                                    v_int32x4& out0, v_int32x4& out1, v_int32x4& out2, v_int32x4& out3)
+{
+    v_int16x8 a0, a1, b0, b1;
+    v_expand(a, a0, a1);
+    v_expand(b, b0, b1);
+
+    v_int32x4 t0, t1;
+    v_mul_expand(a0, b0, t0, t1);
+    out0 += t0; out1 += t1;
+
+    v_mul_expand(a1, b1, t0, t1);
+    out2 += t0; out3 += t1;
+}
+static inline v_int32x4 v_output_stage(const v_int32x4& accum, const v_int32x4& multiplier,
+                                       const int& outZp)
+{
+    v_int32x4 mul = accum * multiplier;
+    v_int32x4 nudge = v_setall_s32(1 << 21);
+    v_int32x4 output = v_setall_s32(outZp) + ((mul+nudge) >> 22);
+
+    v_int32x4 qmin = v_setall_s32(-128), qmax = v_setall_s32(127);
+    return v_min(v_max(output, qmin), qmax);
+}
+#endif
+
 class BaseConvolutionLayerInt8Impl : public ConvolutionLayerInt8
 {
 public:
@@ -297,7 +324,6 @@ public:
         const Mat* activLUT_;
         const ActivationLayerInt8* activ_;
         bool is1x1_;
-        bool useAVX;
         bool useAVX2;
         bool useAVX512;
         int blk_size_cn;
@@ -306,7 +332,7 @@ public:
 
         ParallelConv()
             : input_(0), weights_(0), output_(0), ngroups_(0), nstripes_(0),
-              biasvec_(0), activLUT_(0), activ_(0), is1x1_(false), useAVX(false), useAVX2(false), useAVX512(false)
+              biasvec_(0), activLUT_(0), activ_(0), is1x1_(false), useAVX2(false), useAVX512(false)
             , blk_size_cn(0), inpZp(0), outZp(0), multiplier(0)
         {}
 
@@ -359,7 +385,6 @@ public:
                        pads_begin[0] == 0  && pads_begin[1] == 0) ||
                        (isConv1D && pads_begin[0] == 0 && kernel_size[0] == 1);
 
-            p.useAVX    = checkHardwareSupport(CPU_AVX)  && isConv2D;
             p.useAVX2   = checkHardwareSupport(CPU_AVX2) && isConv2D;
             p.useAVX512 = CV_CPU_HAS_SUPPORT_AVX512_SKX  && isConv2D;
 
@@ -604,7 +629,7 @@ public:
                                         outptr[0] = std::min(std::max(out1, -128), 127);
                                         out_j = 1;
                                     }
-                                #if CV_SIMD || useAVX
+                                #if CV_SIMD
                                     if( stride_w == 1 )
                                     {
                                         const int out_delta = 16;
@@ -642,10 +667,10 @@ public:
                                             v_expand_mul_add(v21, vw21, vout0, vout1, vout2, vout3);
                                             v_expand_mul_add(v22, vw22, vout0, vout1, vout2, vout3);
 
-                                            v_store(outptr + out_j, v_outputStage(vout0, vmult, outZp));
-                                            v_store(outptr + out_j + 4, v_outputStage(vout1, vmult, outZp));
-                                            v_store(outptr + out_j + 8, v_outputStage(vout2, vmult, outZp));
-                                            v_store(outptr + out_j + 12, v_outputStage(vout3, vmult, outZp));
+                                            v_store(outptr + out_j, v_output_stage(vout0, vmult, outZp));
+                                            v_store(outptr + out_j + 4, v_output_stage(vout1, vmult, outZp));
+                                            v_store(outptr + out_j + 8, v_output_stage(vout2, vmult, outZp));
+                                            v_store(outptr + out_j + 12, v_output_stage(vout3, vmult, outZp));
                                         }
                                     }
                                 #endif
@@ -937,7 +962,7 @@ public:
                                 mult1 = mult0;
                             }
                             int j = 0;
-                        #if CV_SIMD128 || useAVX
+                        #if CV_SIMD128
                             for( ; j <= bsz - 4; j += 4 )
                             {
                                 const int8_t* rptr = rowbuf0 + j*vsz_a;
@@ -977,12 +1002,15 @@ public:
                                     vs12 = v_dotprod_expand_fast(w1, r2, vs12);
                                     vs13 = v_dotprod_expand_fast(w1, r3, vs13);
                                 }
-                                s0 += v_reduce_sum4(vs00, vs01, vs02, vs03);
-                                s1 += v_reduce_sum4(vs10, vs11, vs12, vs13);
+                                // Maybe v_reduce_sum4 for int32 should be added in universal intrinsics.
+                                // s0 += v_reduce_sum4(vs00, vs01, vs02, vs03);
+                                // s1 += v_reduce_sum4(vs10, vs11, vs12, vs13);
+                                s0 += v_int32x4(v_reduce_sum(vs00), v_reduce_sum(vs01), v_reduce_sum(vs02), v_reduce_sum(vs03));
+                                s1 += v_int32x4(v_reduce_sum(vs10), v_reduce_sum(vs11), v_reduce_sum(vs12), v_reduce_sum(vs13));
                                 if( cn1 == inpCn )
                                 {
-                                    s0 = v_outputStage(s0, v_setall_s32(mult0), outZp);
-                                    s1 = v_outputStage(s1, v_setall_s32(mult1), outZp);
+                                    s0 = v_output_stage(s0, v_setall_s32(mult0), outZp);
+                                    s1 = v_output_stage(s1, v_setall_s32(mult1), outZp);
                                 }
                                 v_store(outptr0 + j, s0);
                                 v_store(outptr1 + j, s1);

@@ -271,7 +271,11 @@ public:
             int stride_h = isPool1D? 1 :strides[strides.size() - 2];
             int stride_w = strides.back();
 
+#if CV_SIMD128
             const int* ofsptr = (const int*)&ofsbuf[0];
+            if (poolingType == MAX && !ofsptr)
+                CV_Error(Error::StsBadArg, "ofsbuf should be initialized in this mode");
+#endif
 
             for( size_t ofs0 = stripeStart; ofs0 < stripeEnd; )
             {
@@ -384,14 +388,13 @@ public:
 #else
                         CV_UNUSED(isPool2D);
 #endif
-                        // TODO: 1D MaxPool using this branch gives wrong results.
-                        if( false )
+                        if( isPool1D )
                         {
-                            const int* first = (const int*)srcData + xstart;
-                            const int* last = (const int*)srcData + xend;
-                            const int* max_elem = std::max_element(first, last);
+                            const int8_t* first = srcData + xstart;
+                            const int8_t* last = srcData + xend;
+                            const int8_t* max_elem = std::max_element(first, last);
                             if (max_elem != last)
-                                dstData[x0] = int8_t(*max_elem);
+                                dstData[x0] = *max_elem;
                         }
                         else
                         {
@@ -457,11 +460,10 @@ public:
                         }
                         else
 #endif
-                        // TODO: 1D AvgPool using this branch gives wrong results.
-                        if( false )
+                        if( isPool1D )
                         {
-                            const int* first = (const int*)srcData + xstart;
-                            const int* last = (const int*)srcData + xend;
+                            const int8_t* first = srcData + xstart;
+                            const int8_t* last = srcData + xend;
                             int sum_val = std::accumulate(first, last, 0);
                             dstData[x0] = (int8_t)std::round(sum_val*inv_kernel_area);
                         }

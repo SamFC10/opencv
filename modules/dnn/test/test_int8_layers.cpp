@@ -160,6 +160,8 @@ TEST_P(Test_Int8_layers, Flatten)
 
 TEST_P(Test_Int8_layers, Padding)
 {
+    testLayer("padding_valid", "TensorFlow", 0.0026, 0.0064);
+    testLayer("padding_same", "TensorFlow", 0.008, 0.032);
     testLayer("spatial_padding", "TensorFlow", 0.0078, 0.028);
     testLayer("mirror_pad", "TensorFlow", 0.0064, 0.013);
     testLayer("pad_and_concat", "TensorFlow", 0.0026, 0.0121);
@@ -190,8 +192,8 @@ TEST_P(Test_Int8_layers, MaxPooling)
     testLayer("max_pool_odd_valid", "TensorFlow", 0.0064, 0.0133);
     testLayer("conv_pool_nchw", "TensorFlow", 0.009, 0.033);
     testLayer("max_pool3d", "TensorFlow", 0.0047, 0.012);
-    testLayer("maxpooling_1d", "ONNX", 0.0042, 0.0062);
-    testLayer("two_maxpooling_1d", "ONNX", 0.0047, 0.0097);
+    testLayer("maxpooling_1d", "ONNX", 0.0049, 0.0097);
+    testLayer("two_maxpooling_1d", "ONNX", 0.0046, 0.0132);
     testLayer("maxpooling", "ONNX", 0.0069, 0.0115);
     testLayer("two_maxpooling", "ONNX", 0.0049, 0.0097);
     testLayer("max_pool3d", "ONNX", 0.0069, 0.0112);*/

@@ -4510,7 +4510,6 @@ void Net::setPreferableBackend(int backendId)
     if( impl->preferableBackend != backendId )
     {
         impl->preferableBackend = backendId;
-        impl->netWasAllocated = false;
         impl->clear();
     }
 }
@@ -4539,7 +4538,6 @@ void Net::setPreferableTarget(int targetId)
                 impl->preferableTarget = DNN_TARGET_OPENCL;
 #endif
         }
-        impl->netWasAllocated = false;
         impl->clear();
     }
 }
@@ -5255,7 +5253,6 @@ void Net::enableFusion(bool fusion)
     if( impl->fusion != fusion )
     {
         impl->fusion = fusion;
-        impl->netWasAllocated = false;
         impl->clear();
     }
 }

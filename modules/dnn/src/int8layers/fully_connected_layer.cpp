@@ -50,6 +50,19 @@ namespace cv
 namespace dnn
 {
 
+#if CV_SIMD
+static inline v_int32x4 v_output_stage(const v_int32x4& accum, const v_int32x4& multiplier,
+                                       const int& outZp)
+{
+    v_int32x4 mul = accum * multiplier;
+    v_int32x4 nudge = v_setall_s32(1 << 21);
+    v_int32x4 output = v_setall_s32(outZp) + ((mul+nudge) >> 22);
+
+    v_int32x4 qmin = v_setall_s32(-128), qmax = v_setall_s32(127);
+    return v_min(v_max(output, qmin), qmax);
+}
+#endif
+
 class FullyConnectedLayerInt8Impl CV_FINAL : public InnerProductLayerInt8
 {
 public:
@@ -128,7 +141,7 @@ public:
     {
     public:
         FullyConnected() : srcMat(0), weights(0), biasMat(0), additionalParams(0), activationLUT(0), activ(0),
-                           dstMat(0), nstripes(0), outZp(0), useAVX(false), useAVX2(false), useAVX512(false) {}
+                           dstMat(0), nstripes(0), outZp(0), useAVX2(false), useAVX512(false) {}
 
         static void run(const Mat& srcMat, const Mat& weights, const Mat& biasMat, const Mat& additionalParams,
                         const Mat& activationLUT, Mat& dstMat, const ActivationLayerInt8* activ, int nstripes, int outZp)
@@ -150,7 +163,6 @@ public:
             p.nstripes = nstripes;
             p.outZp = outZp;
             p.activ = !activationLUT.empty() ? activ : 0;
-            p.useAVX = checkHardwareSupport(CPU_AVX);
             p.useAVX2 = checkHardwareSupport(CPU_AVX2);
             p.useAVX512 = CV_CPU_HAS_SUPPORT_AVX512_SKX;
 
@@ -200,7 +212,7 @@ public:
             #endif
                 {
                     int i = 0;
-            #if CV_SIMD128 || useAVX
+            #if CV_SIMD
                     for( ; i  <= nw - 4; i += 4, wptr += 4*wstep )
                     {
                         v_int32x4 vs0 = v_setall_s32(0);
@@ -219,8 +231,8 @@ public:
                             vs3 = v_dotprod_expand_fast(v, v_load_aligned(wptr + wstep*3 + k), vs3);
                         }
 
-                        s += v_reduce_sum4(vs0, vs1, vs2, vs3);
-                        v_store(dptr + i, v_outputStage(s, mult, outZp));
+                        s += v_int32x4(v_reduce_sum(vs0), v_reduce_sum(vs1), v_reduce_sum(vs2), v_reduce_sum(vs3));
+                        v_store(dptr + i, v_output_stage(s, mult, outZp));
                     }
             #endif
 
@@ -250,7 +262,6 @@ public:
         const ActivationLayerInt8* activ;
         Mat* dstMat;
         int nstripes, outZp;
-        bool useAVX;
         bool useAVX2;
         bool useAVX512;
     };
