@@ -288,6 +288,14 @@ CV__DNN_INLINE_NS_BEGIN
         static Ptr<SoftmaxLayer> create(const LayerParams& params);
     };
 
+    class CV_EXPORTS SoftmaxLayerInt8 : public SoftmaxLayer
+    {
+    public:
+        float output_sc;
+        int output_zp;
+        static Ptr<SoftmaxLayerInt8> create(const LayerParams& params);
+    };
+
     class CV_EXPORTS InnerProductLayer : public Layer
     {
     public:

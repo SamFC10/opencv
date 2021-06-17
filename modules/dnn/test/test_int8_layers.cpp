@@ -228,6 +228,16 @@ TEST_P(Test_Int8_layers, Mish)
     testLayer("mish", "ONNX", 0.0015, 0.0025);
 }
 
+TEST_P(Test_Int8_layers, Softmax)
+{
+    testLayer("layer_softmax", "Caffe", 0.0011, 0.0036);
+    testLayer("keras_softmax", "TensorFlow", 0.00093, 0.0027);
+    testLayer("slim_softmax", "TensorFlow", 0.0016, 0.0034);
+    testLayer("softmax", "ONNX", 0.0016, 0.0028);
+    testLayer("log_softmax", "ONNX", 0.014, 0.025);
+    testLayer("softmax_unfused", "ONNX", 0.0009, 0.0021);
+}
+
 // TODO : skip this test for all other backends except OpenCV/CPU.
 INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_layers, dnnBackendsAndTargets());
 }} // namespace

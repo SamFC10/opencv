@@ -156,6 +156,8 @@ void initializeLayerFactory()
     CV_DNN_REGISTER_LAYER_CLASS(ELUInt8,          ActivationLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(BNLLInt8,         ActivationLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(AbsValInt8,       ActivationLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(SoftmaxInt8,      SoftmaxLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(SoftMaxInt8,      SoftmaxLayerInt8);
 }
 
 CV__DNN_INLINE_NS_END
