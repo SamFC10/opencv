@@ -172,11 +172,11 @@ TEST_P(Test_Int8_layers, Padding)
 
 TEST_P(Test_Int8_layers, AvePooling)
 {
-    testLayer("layer_pooling_ave", "Caffe", 0.397, 1.005);
+    testLayer("layer_pooling_ave", "Caffe", 0.0021, 0.0076);
     testLayer("ave_pool_same", "TensorFlow", 0.00293, 0.008);
     testLayer("ave_pool3d", "TensorFlow", 0.00465, 0.0113);
     testLayer("average_pooling_1d", "ONNX", 0.0023, 0.0061);
-    testLayer("average_pooling", "ONNX", 0.0887, 0.149);
+    testLayer("average_pooling", "ONNX", 0.0057, 0.011);
     testLayer("average_pooling_dynamic_axes", "ONNX", 0.0046, 0.0096);
     testLayer("ave_pool3d", "ONNX", 0.00413, 0.0094);
 }

@@ -82,6 +82,12 @@ public:
         return backendId == DNN_BACKEND_OPENCV;
     }
 
+    virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
+    {
+        Ptr<DequantizeLayer> dequantize_layer = top.dynamicCast<DequantizeLayer>();
+        return !dequantize_layer.empty();
+    }
+
     void forward(InputArrayOfArrays inputs_arr, OutputArrayOfArrays outputs_arr, OutputArrayOfArrays internals_arr) CV_OVERRIDE
     {
         CV_TRACE_FUNCTION();

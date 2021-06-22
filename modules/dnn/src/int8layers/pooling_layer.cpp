@@ -420,14 +420,17 @@ public:
                         int xdelta = xend - xstart;
                         xstart = max(xstart, 0);
                         xend = min(xend, inp_width);
-                        float inv_kernel_area = avePoolPaddedArea ? xdelta * ydelta * ddelta :
-                                                ((dend - dstart) * (yend - ystart) * (xend - xstart));
+
+                        float real_kernel_area = (dend - dstart) * (yend - ystart) * (xend - xstart);
+                        float padded_kernel_area = xdelta * ydelta * ddelta;
+                        float inv_kernel_area = avePoolPaddedArea ? padded_kernel_area : real_kernel_area;
                         inv_kernel_area = 1.f / inv_kernel_area;
+                        int padded_sum = avePoolPaddedArea ? (padded_kernel_area - real_kernel_area)*outZp : 0;
 #if CV_SIMD128
                         if( isPool2D && xstart > 0 && x0 + 15 < x1 && (x0 + 15) * stride_w - pad_l + kernel_w < inp_width )
                         {
-                            v_int32x4 sum_val0 = v_setzero_s32(), sum_val1 = v_setzero_s32(),
-                                      sum_val2 = v_setzero_s32(), sum_val3 = v_setzero_s32();
+                            v_int32x4 sum_val0 = v_setall_s32(padded_sum), sum_val1 = v_setall_s32(padded_sum),
+                                      sum_val2 = v_setall_s32(padded_sum), sum_val3 = v_setall_s32(padded_sum);
                             v_float32x4 ikarea = v_setall_f32(inv_kernel_area);
 
                             for (int y = ystart; y < yend; ++y)
@@ -450,10 +453,10 @@ public:
                                 }
                             }
 
-                            sum_val0 = v_round(v_reinterpret_as_f32(sum_val0)*ikarea);
-                            sum_val1 = v_round(v_reinterpret_as_f32(sum_val1)*ikarea);
-                            sum_val2 = v_round(v_reinterpret_as_f32(sum_val2)*ikarea);
-                            sum_val3 = v_round(v_reinterpret_as_f32(sum_val3)*ikarea);
+                            sum_val0 = v_round(v_cvt_f32(sum_val0)*ikarea);
+                            sum_val1 = v_round(v_cvt_f32(sum_val1)*ikarea);
+                            sum_val2 = v_round(v_cvt_f32(sum_val2)*ikarea);
+                            sum_val3 = v_round(v_cvt_f32(sum_val3)*ikarea);
 
                             v_store(dstData + x0, v_pack(v_pack(sum_val0, sum_val1), v_pack(sum_val2, sum_val3)));
                             x0 += 15;
@@ -464,12 +467,12 @@ public:
                         {
                             const int8_t* first = srcData + xstart;
                             const int8_t* last = srcData + xend;
-                            int sum_val = std::accumulate(first, last, 0);
+                            int sum_val = padded_sum + std::accumulate(first, last, 0);
                             dstData[x0] = (int8_t)std::round(sum_val*inv_kernel_area);
                         }
                         else
                         {
-                            int sum_val = 0;
+                            int sum_val = padded_sum;
                             for (int d = dstart; d < dend; ++d) {
                                 for (int y = ystart; y < yend; ++y) {
                                     for (int x = xstart; x < xend; ++x) {

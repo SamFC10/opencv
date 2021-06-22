@@ -969,7 +969,7 @@ public:
             if (!bestBlob.empty())
             {
                 reuse(bestBlobPin, lp);
-                bestBlob.reshape(1, 1).colRange(0, targetTotal).reshape(1, shape).convertTo(dst, dtype);
+                dst = bestBlob.reshape(1, 1).colRange(0, targetTotal).reshape(1, shape);
                 return;
             }
         }
@@ -1050,7 +1050,7 @@ public:
                     if (index < outShapes.size() && inPlace)
                     {
                         CV_Assert(ld.inputBlobs[0]->total() == total(shapes[index]));
-                        ld.inputBlobs[0]->reshape(1, shapes[index]).convertTo(ld.outputBlobs[index], ld.dtype);
+                        ld.outputBlobs[index] = ld.inputBlobs[0]->reshape(1, shapes[index]);
                         reuse(ld.inputBlobsId[0], blobPin);
                     }
                     else
