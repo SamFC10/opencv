@@ -70,16 +70,6 @@ static inline void v_expand_mul_add(const v_int8x16& a, const v_int8x16& b,
     v_mul_expand(a1, b1, t0, t1);
     out2 += t0; out3 += t1;
 }
-static inline v_int32x4 v_output_stage(const v_int32x4& accum, const v_int32x4& multiplier,
-                                       const int& outZp)
-{
-    v_int32x4 mul = accum * multiplier;
-    v_int32x4 nudge = v_setall_s32(1 << 21);
-    v_int32x4 output = v_setall_s32(outZp) + ((mul+nudge) >> 22);
-
-    v_int32x4 qmin = v_setall_s32(-128), qmax = v_setall_s32(127);
-    return v_min(v_max(output, qmin), qmax);
-}
 #endif
 
 class BaseConvolutionLayerInt8Impl : public ConvolutionLayerInt8
@@ -96,6 +86,7 @@ public:
 
         input_zp = params.get<int>("input_zeropoint");
         output_zp = params.get<int>("zeropoints");
+        output_sc = params.get<float>("scales");
 
         if (kernel_size.size() == 2) {
             kernel = Size(kernel_size[1], kernel_size[0]);
@@ -122,9 +113,9 @@ public:
         inputs_arr.getMatVector(inputs);
         outputs_arr.getMatVector(outputs);
 
-        // blobs[0] - Weights
-        // blobs[1] - Biases
-        // blobs[2] - Multipliers for convolution output stage
+        // blobs[0] - Weights (INT8)
+        // blobs[1] - Biases (INT32)
+        // blobs[2] - Multipliers for convolution output stage (FP32)
         CV_Assert(!inputs.empty() && blobs.size() == 3);
         MatSize weightShape = blobs[0].size;
 
@@ -179,14 +170,25 @@ public:
 
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
     {
-        // BatchNorm ans/or Scale layer can be fused as its weights are already fused and quantized with convolution layer's weights.
-        Ptr<BatchNormLayer> batchnorm_layer = top.dynamicCast<BatchNormLayer>();
-        Ptr<ScaleLayer> scale_layer = top.dynamicCast<ScaleLayer>();
-        if (batchnorm_layer || scale_layer)
-            return true;
+        Mat w, b;
+        top->getScaleShift(w, b);
+        if (w.empty() && b.empty())
+            return false;
 
-        return false;
+        CV_Assert((w.empty() || w.type() == CV_32F) &&
+                  (b.empty() || b.type() == CV_32F));
+
+        // TODO : Fusing weights has not been tested as currently no int8 layer supports this type of fusion.
+        // float new_scale = top->scale;
+        // int new_zeropoint = top->zeropoint;
+        // fuseWeights(w, b);
+        // output_sc = new_scale;
+        // output_zp = new_zeropoint;
+        fuseWeights(w, b);
+        return true;
     }
+
+    virtual void fuseWeights(const Mat& w_, const Mat& b_) = 0;
 };
 
 //TODO: simultaneously convolution and bias addition for cache optimization
@@ -196,6 +198,7 @@ public:
     enum { VEC_ALIGN = 32, DFT_TYPE = CV_8S };
     Mat weightsMat;
     std::vector<int> biasvec;
+    Mat outputMultiplier;
     Mat activationLUT;
     Ptr<ActivationLayerInt8> activ;
 
@@ -287,7 +290,8 @@ public:
         biasvec.resize(numOutput+2);
         for(int i = 0; i < numOutput; i++ )
             biasvec[i] = biasMat.at<int>(i);
-        biasvec[numOutput] = biasvec[numOutput+1] = biasvec[numOutput-1];
+
+        outputMultiplier = blobs[2];
     }
 
     bool setActivation(const Ptr<ActivationLayer>& layer) CV_OVERRIDE
@@ -306,6 +310,25 @@ public:
     virtual bool tryFuse(Ptr<Layer>& top) CV_OVERRIDE
     {
         return BaseConvolutionLayerInt8Impl::tryFuse(top);
+    }
+
+    void fuseWeights(const Mat& w_, const Mat& b_) CV_OVERRIDE
+    {
+        const int outCn = weightsMat.size[0];
+        Mat w = w_.total() == 1 ? Mat(1, outCn, CV_32F, Scalar(w_.at<float>(0))) : w_;
+        Mat b = b_.total() == 1 ? Mat(1, outCn, CV_32F, Scalar(b_.at<float>(0))) : b_;
+        CV_Assert_N(!weightsMat.empty(), biasvec.size() == outCn + 2,
+                    w.empty() || outCn == w.total(), b.empty() || outCn == b.total());
+
+        for (int i = 0; i < outCn; ++i)
+        {
+            if (!w.empty())
+                outputMultiplier.at<float>(i) *= (w.at<float>(i) * output_sc);
+
+            if (!b.empty())
+                biasvec[i] += (int)std::round(b.at<float>(i)/outputMultiplier.at<float>(i));
+        }
+        biasvec[outCn] = biasvec[outCn+1] = biasvec[outCn-1];
     }
 
     class ParallelConv : public cv::ParallelLoopBody
@@ -328,7 +351,7 @@ public:
         bool useAVX512;
         int blk_size_cn;
         int inpZp, outZp;
-        const int* multiplier;
+        const float* multiplier;
 
         ParallelConv()
             : input_(0), weights_(0), output_(0), ngroups_(0), nstripes_(0),
@@ -336,7 +359,7 @@ public:
             , blk_size_cn(0), inpZp(0), outZp(0), multiplier(0)
         {}
 
-        static void run( const Mat& input, Mat& output, const Mat& weights, const Mat& additionalParams,
+        static void run( const Mat& input, Mat& output, const Mat& weights, const Mat& multipliers,
                          const std::vector<int>& biasvec, const Mat& activLUT,
                          const std::vector<size_t>& kernel_size, const std::vector<size_t>& strides,
                          const std::vector<size_t>& pads_begin, const std::vector<size_t>& pads_end,
@@ -405,7 +428,7 @@ public:
 
             p.inpZp = inp_Zp;
             p.outZp = out_Zp;
-            p.multiplier = additionalParams.ptr<int>(0);
+            p.multiplier = multipliers.ptr<float>(0);
 
             p.ofstab_.resize(karea * ncn);
             int* ofstab = &p.ofstab_[0];
@@ -552,7 +575,7 @@ public:
                 int startOutCn = (subsampleIdx % ngroups)*outCn;
                 const int8_t* wptr_orig = wptr_orig_ + wstep*startOutCn;
                 const int* biasptr = biasptr_ + startOutCn;
-                const int* multptr = multiplier + startOutCn;
+                const float* multptr = multiplier + startOutCn;
 
                 for( int cn0 = 0; cn0 < inpCn; cn0 += blk_size_cn )
                 {
@@ -625,7 +648,7 @@ public:
                                               (int)imgptr1[0]*w11 + (int)imgptr1[dilation_w]*w12 +
                                               (int)imgptr2[0]*w21 + (int)imgptr2[dilation_w]*w22 +
                                               biasCopy + inpZp*(w00 + w10 + w20);
-                                        out1 = outZp + ((out*mult + (1 << 21)) >> 22);
+                                        out1 = outZp + (int)std::round(out*mult);
                                         outptr[0] = std::min(std::max(out1, -128), 127);
                                         out_j = 1;
                                     }
@@ -636,7 +659,9 @@ public:
                                         v_int8x16 vw00 = v_setall_s8(w00), vw01 = v_setall_s8(w01), vw02 = v_setall_s8(w02),
                                                   vw10 = v_setall_s8(w10), vw11 = v_setall_s8(w11), vw12 = v_setall_s8(w12),
                                                   vw20 = v_setall_s8(w20), vw21 = v_setall_s8(w21), vw22 = v_setall_s8(w22);
-                                        v_int32x4 vout0, vout1, vout2, vout3, vbias = v_setall_s32(biasCopy), vmult = v_setall_s32(mult);
+                                        v_int32x4 vout0, vout1, vout2, vout3, vbias = v_setall_s32(biasCopy), voutzp = v_setall_s32(outZp),
+                                                  outmin = v_setall_s32(-128), outmax = v_setall_s32(127);
+                                        v_float32x4 vmult = v_setall_f32(mult);
                                         for( ; out_j < outW1; out_j += out_delta )
                                         {
                                             if (out_j + out_delta > outW1)
@@ -667,10 +692,20 @@ public:
                                             v_expand_mul_add(v21, vw21, vout0, vout1, vout2, vout3);
                                             v_expand_mul_add(v22, vw22, vout0, vout1, vout2, vout3);
 
-                                            v_store(outptr + out_j, v_output_stage(vout0, vmult, outZp));
-                                            v_store(outptr + out_j + 4, v_output_stage(vout1, vmult, outZp));
-                                            v_store(outptr + out_j + 8, v_output_stage(vout2, vmult, outZp));
-                                            v_store(outptr + out_j + 12, v_output_stage(vout3, vmult, outZp));
+                                            vout0 = voutzp + v_round(v_cvt_f32(vout0)*vmult);
+                                            vout1 = voutzp + v_round(v_cvt_f32(vout1)*vmult);
+                                            vout2 = voutzp + v_round(v_cvt_f32(vout2)*vmult);
+                                            vout3 = voutzp + v_round(v_cvt_f32(vout3)*vmult);
+
+                                            vout0 = v_min(v_max(vout0, outmin), outmax);
+                                            vout1 = v_min(v_max(vout1, outmin), outmax);
+                                            vout2 = v_min(v_max(vout2, outmin), outmax);
+                                            vout3 = v_min(v_max(vout3, outmin), outmax);
+
+                                            v_store(outptr + out_j, vout0);
+                                            v_store(outptr + out_j + 4, vout1);
+                                            v_store(outptr + out_j + 8, vout2);
+                                            v_store(outptr + out_j + 12, vout3);
                                         }
                                     }
                                 #endif
@@ -680,7 +715,7 @@ public:
                                         out = (int)imgptr0[in_j]*w00 + (int)imgptr0[in_j + dilation_w]*w01 + (int)imgptr0[in_j + dilation_w*2]*w02 +
                                               (int)imgptr1[in_j]*w10 + (int)imgptr1[in_j + dilation_w]*w11 + (int)imgptr1[in_j + dilation_w*2]*w12 +
                                               (int)imgptr2[in_j]*w20 + (int)imgptr2[in_j + dilation_w]*w21 + (int)imgptr2[in_j + dilation_w*2]*w22 + biasCopy;
-                                        out1 = outZp + ((out*mult + (1 << 21)) >> 22);
+                                        out1 = outZp + (int)std::round(out*mult);
                                         outptr[out_j] = std::min(std::max(out1, -128), 127);
                                     }
 
@@ -709,7 +744,7 @@ public:
                                         out = (int)imgptr0[in_j0]*w00*s0 + (int)imgptr0[in_j1]*w01*s1 + (int)imgptr0[in_j2]*w02*s2 +
                                               (int)imgptr1[in_j0]*w10*s0 + (int)imgptr1[in_j1]*w11*s1 + (int)imgptr1[in_j2]*w12*s2 +
                                               (int)imgptr2[in_j0]*w20*s0 + (int)imgptr2[in_j1]*w21*s1 + (int)imgptr2[in_j2]*w22*s2 + biasCopy;
-                                        out1 = outZp + ((out*mult + (1 << 21)) >> 22);
+                                        out1 = outZp + (int)std::round(out*mult);
                                         outptr[out_j] = std::min(std::max(out1, -128), 127);
                                     }
                                 }
@@ -952,7 +987,7 @@ public:
                             int* outptr0 = data_out0 + ofs0 + i*outPlaneSize;
                             int* outptr1 = outptr0 + outPlaneSize;
                             int bias0 = biasptr[i], bias1 = biasptr[i+1];
-                            int mult0 = multptr[i], mult1 = multptr[i+1];
+                            float mult0 = multptr[i], mult1 = multptr[i+1];
 
                             if( i+1 >= outCn )
                             {
@@ -963,6 +998,8 @@ public:
                             }
                             int j = 0;
                         #if CV_SIMD128
+                            v_int32x4 voutzp = v_setall_s32(outZp), outmin = v_setall_s32(-128), outmax = v_setall_s32(127);
+                            v_float32x4 vmult0 = v_setall_f32(mult0), vmult1 = v_setall_f32(mult1);
                             for( ; j <= bsz - 4; j += 4 )
                             {
                                 const int8_t* rptr = rowbuf0 + j*vsz_a;
@@ -1002,15 +1039,15 @@ public:
                                     vs12 = v_dotprod_expand_fast(w1, r2, vs12);
                                     vs13 = v_dotprod_expand_fast(w1, r3, vs13);
                                 }
-                                // Maybe v_reduce_sum4 for int32 should be added in universal intrinsics.
-                                // s0 += v_reduce_sum4(vs00, vs01, vs02, vs03);
-                                // s1 += v_reduce_sum4(vs10, vs11, vs12, vs13);
                                 s0 += v_int32x4(v_reduce_sum(vs00), v_reduce_sum(vs01), v_reduce_sum(vs02), v_reduce_sum(vs03));
                                 s1 += v_int32x4(v_reduce_sum(vs10), v_reduce_sum(vs11), v_reduce_sum(vs12), v_reduce_sum(vs13));
                                 if( cn1 == inpCn )
                                 {
-                                    s0 = v_output_stage(s0, v_setall_s32(mult0), outZp);
-                                    s1 = v_output_stage(s1, v_setall_s32(mult1), outZp);
+                                    s0 = voutzp + v_round(v_cvt_f32(s0)*vmult0);
+                                    s1 = voutzp + v_round(v_cvt_f32(s1)*vmult1);
+
+                                    s0 = v_min(v_max(s0, outmin), outmax);
+                                    s1 = v_min(v_max(s1, outmin), outmax);
                                 }
                                 v_store(outptr0 + j, s0);
                                 v_store(outptr1 + j, s1);
@@ -1040,8 +1077,8 @@ public:
                                 }
                                 if( cn1 == inpCn )
                                 {
-                                    int out0 = outZp + ((s00*mult0 + (1 << 21)) >> 22);
-                                    int out1 = outZp + ((s10*mult1 + (1 << 21)) >> 22);
+                                    int out0 = outZp + (int)std::round(s00*mult0);
+                                    int out1 = outZp + (int)std::round(s10*mult1);
 
                                     s00 = std::min(std::max(out0, -128), 127);
                                     s10 = std::min(std::max(out1, -128), 127);
@@ -1100,7 +1137,7 @@ public:
         int nstripes = std::max(getNumThreads(), 1);
         Mat outputInt32 = Mat(shape(outputs[0]), CV_32S);
 
-        ParallelConv::run(inputs[0], outputInt32, weightsMat, blobs[2], biasvec, activationLUT, kernel_size, strides,
+        ParallelConv::run(inputs[0], outputInt32, weightsMat, outputMultiplier, biasvec, activationLUT, kernel_size, strides,
                           pads_begin, pads_end, dilations, activ.get(), ngroups, nstripes, input_zp, output_zp);
 
         outputInt32.convertTo(outputs[0], CV_8S);

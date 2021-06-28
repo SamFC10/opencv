@@ -140,6 +140,16 @@ public:
         return false;
     }
 
+    bool setActivation(const Ptr<ActivationLayer>& layer) CV_OVERRIDE
+    {
+        Ptr<ActivationLayerInt8> activ_int8 = layer.dynamicCast<ActivationLayerInt8>();
+        if (!activ_int8.empty())
+        {
+            return type == MAX && activ_int8->blobs.empty();
+        }
+        return false;
+    }
+
     void forward(InputArrayOfArrays inputs_arr, OutputArrayOfArrays outputs_arr, OutputArrayOfArrays internals_arr) CV_OVERRIDE
     {
         CV_TRACE_FUNCTION();

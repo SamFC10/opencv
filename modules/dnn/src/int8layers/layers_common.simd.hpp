@@ -49,20 +49,20 @@ CV_CPU_OPTIMIZATION_NAMESPACE_BEGIN
 void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                const int8_t* rowbuf, int* output, const int* outShape,
                int blockSize, int vecsize, int vecsize_aligned, int outZp,
-               const int* multiplier, bool initOutput, bool finalOutput );
+               const float* multiplier, bool initOutput, bool finalOutput );
 void fastDepthwiseConv( const int8_t* wptr,
                         int kernel_h, int kernel_w,
                         int stride_h, int stride_w,
                         int dilation_h, int dilation_w,
                         int pad_t, int pad_l,
-                        const int* biasptr, const int* multptr,
+                        const int* biasptr, const float* multptr,
                         const int8_t* inptr_,
                         int height, int width,
                         int* outptr_,
                         int out_d, int outH, int outW,
                         int inpZp, int outZp );
 void fastGEMM1T( const int8_t* vec, const int8_t* weights,
-                 size_t wstep, const int* bias, const int* multiplier,
+                 size_t wstep, const int* bias, const float* multiplier,
                  int* dst, int nvecs, int vecsize, int outZp );
 
 #if !defined(CV_CPU_OPTIMIZATION_DECLARATIONS_ONLY) && CV_AVX2
@@ -82,33 +82,12 @@ void fastGEMM1T( const int8_t* vec, const int8_t* weights,
 OPENCV_FMADD_EPI8(__m256i, mm256)
 //OPENCV_FMADD_EPI8(__m512i, mm512)
 
-#define OPENCV_QUANT_OUTPUT_STAGE(_Tpvec, func) \
-    inline _Tpvec OutputStage(const _Tpvec& accum, const _Tpvec& mult, const int& outZp) \
-    { \
-        _Tpvec mul = _##func##_mullo_epi32(accum, mult);                                 \
-        _Tpvec nudge = _##func##_set1_epi32(1 << 21);                                    \
-        _Tpvec rshr = _##func##_srai_epi32(_##func##_add_epi32(mul, nudge), 22);         \
-        _Tpvec output = _##func##_add_epi32(_##func##_set1_epi32(outZp), rshr);          \
-                                                                                         \
-        _Tpvec qmin = _##func##_set1_epi32(-128), qmax = _##func##_set1_epi32(127);      \
-        return _##func##_min_epi32(_##func##_max_epi32(output, qmin), qmax);             \
-    }
-OPENCV_QUANT_OUTPUT_STAGE(__m128i, mm)
-OPENCV_QUANT_OUTPUT_STAGE(__m256i, mm256)
-
-static inline int OutputStage(const int& accum, const int& multiplier, const int& outZp)
-{
-    int mul = accum * multiplier;
-    int output = outZp + ((mul + (1 << 21)) >> 22);
-    return std::min(std::max(output, -128), 127);
-}
-
 enum { FASCONV_BASE_VECSZ = 4 };
 
 void fastConv( const int8_t* weights, size_t wstep, const int* bias,
                const int8_t* rowbuf, int* output, const int* outShape,
                int blockSize, int vecsize, int vecsize_aligned, int outZp,
-               const int* multiplier, bool initOutput, bool finalOutput )
+               const float* multiplier, bool initOutput, bool finalOutput )
 {
     int outCn = outShape[1];
     size_t outPlaneSize = outShape[2]*outShape[3];
@@ -129,7 +108,7 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
         int* outptr1 = outptr0 + outPlaneSize;
         int* outptr2 = outptr1 + outPlaneSize;
         int bias0 = bias[i], bias1 = bias[i+1], bias2 = bias[i+2];
-        int mult0 = multiplier[i], mult1 = multiplier[i+1], mult2 = multiplier[i+2];
+        float mult0 = multiplier[i], mult1 = multiplier[i+1], mult2 = multiplier[i+2];
 
         if( i+2 >= outCn )
         {
@@ -282,9 +261,15 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( finalOutput )
             {
-                s0 =  OutputStage(s0, _mm_set1_epi32(mult0), outZp);
-                s1 =  OutputStage(s1, _mm_set1_epi32(mult1), outZp);
-                s2 =  OutputStage(s2, _mm_set1_epi32(mult2), outZp);
+                __m128i voutzp = _mm_set1_epi32(outZp);
+                __m128i outmin = _mm_set1_epi32(-128), outmax = _mm_set1_epi32(127);
+                s0 = _mm_add_epi32(voutzp, _mm_cvtps_epi32(_mm_mul_ps(_mm_cvtepi32_ps(s0), _mm_set1_ps(mult0))));
+                s1 = _mm_add_epi32(voutzp, _mm_cvtps_epi32(_mm_mul_ps(_mm_cvtepi32_ps(s1), _mm_set1_ps(mult1))));
+                s2 = _mm_add_epi32(voutzp, _mm_cvtps_epi32(_mm_mul_ps(_mm_cvtepi32_ps(s2), _mm_set1_ps(mult2))));
+
+                s0 = _mm_min_epi32(_mm_max_epi32(s0, outmin), outmax);
+                s1 = _mm_min_epi32(_mm_max_epi32(s1, outmin), outmax);
+                s2 = _mm_min_epi32(_mm_max_epi32(s2, outmin), outmax);
             }
             if( tail )
             {
@@ -327,12 +312,12 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( finalOutput )
             {
-                s00 = OutputStage(s00, mult0, outZp);
-                s01 = OutputStage(s01, mult0, outZp);
-                s10 = OutputStage(s10, mult1, outZp);
-                s11 = OutputStage(s11, mult1, outZp);
-                s20 = OutputStage(s20, mult2, outZp);
-                s21 = OutputStage(s21, mult2, outZp);
+                s00 = std::min(std::max(outZp + (int)std::round(s00*mult0), -128), 127);
+                s01 = std::min(std::max(outZp + (int)std::round(s01*mult0), -128), 127);
+                s10 = std::min(std::max(outZp + (int)std::round(s10*mult1), -128), 127);
+                s11 = std::min(std::max(outZp + (int)std::round(s11*mult1), -128), 127);
+                s20 = std::min(std::max(outZp + (int)std::round(s20*mult2), -128), 127);
+                s21 = std::min(std::max(outZp + (int)std::round(s21*mult2), -128), 127);
             }
             outptr0[j] = s00;
             outptr0[j+1] = s01;
@@ -369,9 +354,9 @@ void fastConv( const int8_t* weights, size_t wstep, const int* bias,
 
             if( finalOutput )
             {
-                s00 = OutputStage(s00, mult0, outZp);
-                s10 = OutputStage(s10, mult1, outZp);
-                s20 = OutputStage(s20, mult2, outZp);
+                s00 = std::min(std::max(outZp + (int)std::round(s00*mult0), -128), 127);
+                s10 = std::min(std::max(outZp + (int)std::round(s10*mult1), -128), 127);
+                s20 = std::min(std::max(outZp + (int)std::round(s20*mult2), -128), 127);
             }
             outptr0[j] = s00;
             outptr1[j] = s10;
@@ -419,7 +404,7 @@ void fastDepthwiseConv( const int8_t* wptr,
                      int stride_h, int stride_w,
                      int dilation_h, int dilation_w,
                      int pad_t, int pad_l,
-                     const int* biasptr, const int* multptr,
+                     const int* biasptr, const float* multptr,
                      const int8_t* inptr_,
                      int height, int width,
                      int* outptr_,
@@ -430,7 +415,8 @@ void fastDepthwiseConv( const int8_t* wptr,
                  w10 = wptr[3], w11 = wptr[4], w12 = wptr[5],
                  w20_ = wptr[6], w21_ = wptr[7], w22_ = wptr[8];
     int outW1 = min(outW, (width - dilation_w*(kernel_w - 1) + pad_l)/stride_w);
-    int bias = biasptr[out_d], mult = multptr[out_d];
+    float mult = multptr[out_d];
+    int bias = biasptr[out_d];
     int biasCopy;
 
     for (int out_i = 0; out_i < outH; out_i++)
@@ -462,7 +448,7 @@ void fastDepthwiseConv( const int8_t* wptr,
                   (int)imgptr1[0]*w11 + (int)imgptr1[dilation_w]*w12 +
                   (int)imgptr2[0]*w21 + (int)imgptr2[dilation_w]*w22 +
                   biasCopy + inpZp*(w00 + w10 + w20);
-            outptr[0] = OutputStage(out, mult, outZp);
+            outptr[0] = std::min(std::max(outZp + (int)std::round(out*mult), -128), 127);
             out_j = 1;
         }
 
@@ -472,7 +458,9 @@ void fastDepthwiseConv( const int8_t* wptr,
             __m256i vw00 = _mm256_set1_epi8(w00), vw01 = _mm256_set1_epi8(w01), vw02 = _mm256_set1_epi8(w02),
                     vw10 = _mm256_set1_epi8(w10), vw11 = _mm256_set1_epi8(w11), vw12 = _mm256_set1_epi8(w12),
                     vw20 = _mm256_set1_epi8(w20), vw21 = _mm256_set1_epi8(w21), vw22 = _mm256_set1_epi8(w22);
-            __m256i vbias = _mm256_set1_epi32(biasCopy), vmult = _mm256_set1_epi32(mult);
+            __m256i vbias = _mm256_set1_epi32(biasCopy), voutzp = _mm256_set1_epi32(outZp),
+                    outmin = _mm256_set1_epi32(-128), outmax = _mm256_set1_epi32(127);
+            __m256 vmult = _mm256_set1_ps(mult);
             __m256i vout0, vout1, vout2, vout3;
 
             if( stride_w == 1 )
@@ -507,10 +495,20 @@ void fastDepthwiseConv( const int8_t* wptr,
                     _mm256_expand_mul_add(v21, vw21, vout0, vout1, vout2, vout3);
                     _mm256_expand_mul_add(v22, vw22, vout0, vout1, vout2, vout3);
 
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j), OutputStage(vout0, vmult, outZp));
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 8), OutputStage(vout1, vmult, outZp));
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 16), OutputStage(vout2, vmult, outZp));
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 24), OutputStage(vout3, vmult, outZp));
+                    vout0 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout0), vmult)));
+                    vout1 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout1), vmult)));
+                    vout2 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout2), vmult)));
+                    vout3 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout3), vmult)));
+
+                    vout0 = _mm256_min_epi32(_mm256_max_epi32(vout0, outmin), outmax);
+                    vout1 = _mm256_min_epi32(_mm256_max_epi32(vout1, outmin), outmax);
+                    vout2 = _mm256_min_epi32(_mm256_max_epi32(vout2, outmin), outmax);
+                    vout3 = _mm256_min_epi32(_mm256_max_epi32(vout3, outmin), outmax);
+
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j), vout0);
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 8), vout1);
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 16), vout2);
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 24), vout3);
                 }
             }
             else
@@ -543,10 +541,20 @@ void fastDepthwiseConv( const int8_t* wptr,
                     _mm256_expand_mul_add(v21, vw21, vout0, vout1, vout2, vout3);
                     _mm256_expand_mul_add(v22, vw22, vout0, vout1, vout2, vout3);
 
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j), OutputStage(vout0, vmult, outZp));
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 8), OutputStage(vout1, vmult, outZp));
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 16), OutputStage(vout2, vmult, outZp));
-                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 24), OutputStage(vout3, vmult, outZp));
+                    vout0 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout0), vmult)));
+                    vout1 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout1), vmult)));
+                    vout2 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout2), vmult)));
+                    vout3 = _mm256_add_epi32(voutzp, _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_cvtepi32_ps(vout3), vmult)));
+
+                    vout0 = _mm256_min_epi32(_mm256_max_epi32(vout0, outmin), outmax);
+                    vout1 = _mm256_min_epi32(_mm256_max_epi32(vout1, outmin), outmax);
+                    vout2 = _mm256_min_epi32(_mm256_max_epi32(vout2, outmin), outmax);
+                    vout3 = _mm256_min_epi32(_mm256_max_epi32(vout3, outmin), outmax);
+
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j), vout0);
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 8), vout1);
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 16), vout2);
+                    _mm256_storeu_si256((__m256i*)(outptr + out_j + 24), vout3);
                 }
             }
         }
@@ -557,7 +565,7 @@ void fastDepthwiseConv( const int8_t* wptr,
             out = (int)imgptr0[in_j]*w00 + (int)imgptr0[in_j + dilation_w]*w01 + (int)imgptr0[in_j + dilation_w*2]*w02 +
                   (int)imgptr1[in_j]*w10 + (int)imgptr1[in_j + dilation_w]*w11 + (int)imgptr1[in_j + dilation_w*2]*w12 +
                   (int)imgptr2[in_j]*w20 + (int)imgptr2[in_j + dilation_w]*w21 + (int)imgptr2[in_j + dilation_w*2]*w22 + biasCopy;
-            outptr[out_j] = OutputStage(out, mult, outZp);
+            outptr[out_j] = std::min(std::max(outZp + (int)std::round(out*mult), -128), 127);
         }
 
         for (; out_j < outW; out_j++ )
@@ -585,7 +593,7 @@ void fastDepthwiseConv( const int8_t* wptr,
             out = (int)imgptr0[in_j0]*w00*s0 + (int)imgptr0[in_j1]*w01*s1 + (int)imgptr0[in_j2]*w02*s2 +
                   (int)imgptr1[in_j0]*w10*s0 + (int)imgptr1[in_j1]*w11*s1 + (int)imgptr1[in_j2]*w12*s2 +
                   (int)imgptr2[in_j0]*w20*s0 + (int)imgptr2[in_j1]*w21*s1 + (int)imgptr2[in_j2]*w22*s2 + biasCopy;
-            outptr[out_j] = OutputStage(out, mult, outZp);
+            outptr[out_j] = std::min(std::max(outZp + (int)std::round(out*mult), -128), 127);
         }
     }
     _mm256_zeroupper();
@@ -593,7 +601,7 @@ void fastDepthwiseConv( const int8_t* wptr,
 
 // dst = vec * weights^t + bias
 void fastGEMM1T( const int8_t* vec, const int8_t* weights,
-                 size_t wstep, const int* bias, const int* multiplier,
+                 size_t wstep, const int* bias, const float* multiplier,
                  int* dst, int nvecs, int vecsize, int outZp )
 {
     int i = 0;
@@ -605,6 +613,9 @@ void fastGEMM1T( const int8_t* vec, const int8_t* weights,
                 vs2 = _mm256_setzero_si256(), vs3 = _mm256_setzero_si256(),
                 vs4 = _mm256_setzero_si256(), vs5 = _mm256_setzero_si256(),
                 vs6 = _mm256_setzero_si256(), vs7 = _mm256_setzero_si256();
+
+        __m128i voutzp = _mm_set1_epi32(outZp);
+        __m128i outmin = _mm_set1_epi32(-128), outmax = _mm_set1_epi32(127);
 
         for( int k = 0; k < vecsize; k += 32, wptr += 32 )
         {
@@ -629,8 +640,14 @@ void fastGEMM1T( const int8_t* vec, const int8_t* weights,
         __m128i t0 = _mm_add_epi32(_mm256_castsi256_si128(s0), _mm_loadu_si128((__m128i*)(bias + i)));
         __m128i t1 = _mm_add_epi32(_mm256_castsi256_si128(s1), _mm_loadu_si128((__m128i*)(bias + i + 4)));
 
-        _mm_storeu_si128((__m128i*)(dst + i), OutputStage(t0, _mm_loadu_si128((__m128i*)(multiplier + i)), outZp));
-        _mm_storeu_si128((__m128i*)(dst + i + 4), OutputStage(t1, _mm_loadu_si128((__m128i*)(multiplier + i + 4)), outZp));
+        t0 = _mm_add_epi32(voutzp, _mm_cvtps_epi32(_mm_mul_ps(_mm_cvtepi32_ps(t0), _mm_loadu_ps(multiplier + i))));
+        t1 = _mm_add_epi32(voutzp, _mm_cvtps_epi32(_mm_mul_ps(_mm_cvtepi32_ps(t1), _mm_loadu_ps(multiplier + i + 4))));
+
+        t0 = _mm_min_epi32(_mm_max_epi32(t0, outmin), outmax);
+        t1 = _mm_min_epi32(_mm_max_epi32(t1, outmin), outmax);
+
+        _mm_storeu_si128((__m128i*)(dst + i), t0);
+        _mm_storeu_si128((__m128i*)(dst + i + 4), t1);
     }
 
     for( ; i < nvecs; i++ )
@@ -647,7 +664,7 @@ void fastGEMM1T( const int8_t* vec, const int8_t* weights,
         __m256i s0 = _mm256_hadd_epi32(_mm256_hadd_epi32(vs0, vs0), vs0);
         s0 = _mm256_add_epi32(s0, _mm256_permute2x128_si256(s0, s0, 1));
         int temp = _mm_extract_epi32(_mm256_castsi256_si128(s0), 0);
-        dst[i] = OutputStage(temp + bias[i], multiplier[i], outZp);
+        dst[i] = outZp + (int)std::round((temp + bias[i]) * multiplier[i]);
     }
 
     _mm256_zeroupper();

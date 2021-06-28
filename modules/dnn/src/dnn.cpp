@@ -958,7 +958,8 @@ public:
                 {
                     Mat& unusedBlob = hostIt->second;
                     if (unusedBlob.total() >= targetTotal &&
-                        unusedBlob.total() < bestBlobTotal)
+                        unusedBlob.total() < bestBlobTotal &&
+                        unusedBlob.type() == dtype)
                     {
                         bestBlobPin = hostIt->first;
                         bestBlob = unusedBlob;
@@ -1369,8 +1370,7 @@ struct Net::Impl : public detail::NetImplBase
         layersTimings.clear();
     }
 
-    void setUpNet(const std::vector<LayerPin>& blobsToKeep_ = std::vector<LayerPin>(),
-                  bool setUpForQuantization = false)
+    void setUpNet(const std::vector<LayerPin>& blobsToKeep_ = std::vector<LayerPin>())
     {
         CV_TRACE_FUNCTION();
 
@@ -1461,7 +1461,7 @@ struct Net::Impl : public detail::NetImplBase
 
             this->blobsToKeep = blobsToKeep_;
 
-            allocateLayers(blobsToKeep_, setUpForQuantization);
+            allocateLayers(blobsToKeep_);
 
             MapIdToLayerData::iterator it = layers.find(0);
             CV_Assert(it != layers.end());
@@ -2569,7 +2569,7 @@ struct Net::Impl : public detail::NetImplBase
 #define printf_(args)
 #endif
 
-    void fuseLayers(const std::vector<LayerPin>& blobsToKeep_, bool setUpForQuantization)
+    void fuseLayers(const std::vector<LayerPin>& blobsToKeep_)
     {
         CV_TRACE_FUNCTION();
 
@@ -2659,18 +2659,6 @@ struct Net::Impl : public detail::NetImplBase
                         nextData->type != "TanH" &&
                         nextData->type != "Power")
                         break;
-
-                    // Activations must not be fused to compute the correct lookup-tables for int8 activations.
-                    if (setUpForQuantization && (currLayer->type == "Convolution" || currLayer->type == "InnerProduct"))
-                    {
-                        if ((nextData->type == "ReLU" && nextData->params.get<float>("negative_slope", 0.f) == 0.f) ||
-                             nextData->type == "ReLU6")
-                        {
-                            // Can be fused as lookup-tables are not needed
-                        }
-                        else
-                            break;
-                    }
 
                     Ptr<ActivationLayer> nextActivLayer = nextData->layerInstance.dynamicCast<ActivationLayer>();
                     if (nextActivLayer.empty())
@@ -3127,7 +3115,7 @@ struct Net::Impl : public detail::NetImplBase
         }
     }
 
-    void allocateLayers(const std::vector<LayerPin>& blobsToKeep_, bool setUpForQuantization)
+    void allocateLayers(const std::vector<LayerPin>& blobsToKeep_)
     {
         CV_TRACE_FUNCTION();
 
@@ -3183,7 +3171,7 @@ struct Net::Impl : public detail::NetImplBase
         }
 
         layersTimings.resize(lastLayerId + 1, 0);
-        fuseLayers(blobsToKeep_, setUpForQuantization);
+        fuseLayers(blobsToKeep_);
     }
 
     void forwardLayer(LayerData &ld)
@@ -3452,89 +3440,23 @@ struct Net::Impl : public detail::NetImplBase
 #endif
     }
 
-    void getQuantizationParams(const Mat& src, const std::string& type,
-                               std::vector<float>& scales, std::vector<int>& zeropoints)
+    void getQuantizationParams(const Mat& src, std::vector<float>& scales, std::vector<int>& zeropoints)
     {
         const int qmin = -128; // INT8_MIN
         const int qmax = 127;  // INT8_MAX
-        double rmin, rmax, scale, zeropoint;
 
-        if (type == "MinMax")
-        {
-            cv::minMaxIdx(src, &rmin, &rmax);
+        double rmin, rmax, sc, zp;
+        cv::minMaxIdx(src, &rmin, &rmax);
 
-            rmin = std::min(rmin, 0.0);
-            rmax = std::max(rmax, 0.0);
+        // 0 must be present in the range [rmin, rmax]
+        rmin = std::min(rmin, 0.0);
+        rmax = std::max(rmax, 0.0);
 
-            scale = (rmax == rmin) ? 1.0 : (rmax - rmin)/(qmax - qmin);
-            zeropoint = qmin - (rmin/scale);
+        sc = (rmax == rmin) ? 1.0 : (rmax - rmin)/(qmax - qmin);
+        zp = qmin - (rmin/sc);
 
-            scales.push_back((float)scale);
-            zeropoints.push_back((int)std::round(zeropoint));
-        }
-        else if (type == "PerChannelMinMax")
-        {
-            int channels = src.size[0];
-            for (int i = 0; i < channels; i++)
-            {
-                cv::minMaxIdx(src.row(i), &rmin, &rmax);
-
-                rmin = std::min(rmin, 0.0);
-                rmax = std::max(rmax, 0.0);
-
-                scale = (rmax == rmin) ? 1.0 : std::max(-rmin, rmax)/qmax;
-                scales.push_back((float)scale);
-                zeropoints.push_back(0);
-            }
-        }
-        else
-            CV_Error(Error::StsBadArg, "Unknown calibration type \"" + type + "\"");
-    }
-
-    void quantizeLayer(LayerData& ld, std::vector<float>& scales, std::vector<int>& zeropoints)
-    {
-        CV_TRACE_FUNCTION();
-        CV_Assert(!scales.empty() && !zeropoints.empty());
-
-        if (ld.skip)
-        {
-            if (ld.type == "Concat")
-            {
-                scales.clear(); zeropoints.clear();
-                getQuantizationParams(ld.outputBlobs[0], "MinMax", scales, zeropoints);
-                return;
-            }
-
-            LayerData &inpld = layers[ld.inputBlobsId[0].lid];
-            if (inpld.type != "Eltwise" && inpld.type != "MVN")
-            {
-                ld.type += ((ld.type == "ReLU" || ld.type == "ReLU6") ? "Int8" : "");
-                ld.dtype = CV_8S;
-            }
-            return;
-        }
-        std::vector<std::vector<float> > in_out_scales(2);
-        std::vector<std::vector<int> > in_out_zeropoints(2);
-        in_out_scales[0] = scales;
-        in_out_zeropoints[0] = zeropoints;
-
-        Ptr<Layer> layer = ld.layerInstance;
-        std::vector<Mat> inps(ld.inputBlobs.size());
-        for (int i = 0; i < ld.inputBlobs.size(); ++i)
-            inps[i] = *ld.inputBlobs[i];
-        layer->forward(inps, ld.outputBlobs, ld.internals);
-
-        for (int i = 0; i < ld.outputBlobs.size(); ++i)
-            getQuantizationParams(ld.outputBlobs[i], "MinMax", in_out_scales[1], in_out_zeropoints[1]);
-
-        if (layer->tryQuantize(in_out_scales, in_out_zeropoints, ld.params))
-        {
-            ld.type += "Int8";
-            ld.dtype = CV_8S;
-        }
-
-        scales = in_out_scales[1];
-        zeropoints = in_out_zeropoints[1];
+        scales.push_back((float)sc);
+        zeropoints.push_back((int)std::round(zp));
     }
 
     void getLayerShapesRecursively(int id, LayersShapesMap& inOutShapes)
@@ -4356,7 +4278,8 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
         CV_Error(Error::StsBadArg, "Cannot quantize a quantized net");
 
     // Set-up floating point Net with calibration data as input.
-    impl->clear();
+    enableFusion(false);
+
     if (calibData.isMat())
     {
         setInput(calibData.getMat());
@@ -4365,99 +4288,148 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
     {
         std::vector<Mat> calibDataVec;
         calibData.getMatVector(calibDataVec);
+
         std::vector<String> inpNames = impl->netInputLayer->outNames;
-        CV_Assert(!inpNames.empty());
         CV_CheckEQ(calibDataVec.size(), inpNames.size(), "Calibration data size should be equal to number of inputs");
         for (int i = 0; i < calibDataVec.size(); i++)
-        {
             setInput(calibDataVec[i], inpNames[i]);
-        }
     }
 
     std::vector<String> outNames = getUnconnectedOutLayersNames();
-    CV_Assert(!outNames.empty());
     std::vector<LayerPin> pins;
     for (int i = 0; i < outNames.size(); i++)
-    {
         pins.push_back(impl->getPinByAlias(outNames[i]));
-    }
-    impl->setUpNet(pins, true);
+    impl->setUpNet(pins);
 
-    // Floating point Net set-up done. Prepare quantized Net.
+    // Compute scales and zeropoints for all the layers
+    std::vector<std::vector<float> > scales;
+    std::vector<std::vector<int> > zeropoints;
+    for (Impl::MapIdToLayerData::iterator it = impl->layers.begin(); it != impl->layers.end(); it++)
+    {
+        LayerData& ld = it->second;
+        if (!ld.skip)
+        {
+            Ptr<Layer> layer = ld.layerInstance;
+            std::vector<Mat> inps(ld.inputBlobs.size());
+            for (int i = 0; i < ld.inputBlobs.size(); ++i)
+                inps[i] = *ld.inputBlobs[i];
+            layer->forward(inps, ld.outputBlobs, ld.internals);
+        }
+
+        std::vector<float> sc;
+        std::vector<int> zp;
+        for (int i = 0; i < ld.outputBlobs.size(); i++)
+            impl->getQuantizationParams(ld.outputBlobs[i], sc, zp);
+
+        scales.push_back(sc);
+        zeropoints.push_back(zp);
+    }
+
+    // For some layers, the input and output scales/zeropoints must be equal so that rescaling of inputs
+    // is not needed during quantized inference. We start from the last layer and modify the layer's input scales/zeropoints
+    for (Impl::MapIdToLayerData::reverse_iterator it = impl->layers.rbegin(); it != impl->layers.rend(); ++it)
+    {
+        LayerData& ld = it->second;
+        if ((ld.type == "Pooling" && toLowerCase(ld.params.get<String>("pool", "max")) == "max") || ld.type == "Padding" ||
+            (ld.type == "ReLU" && !ld.params.get<float>("negative_slope", 0.f)) || ld.type == "ReLU6" || ld.type == "Concat")
+        {
+            for (int i = 0; i < ld.inputBlobsId.size(); i++)
+            {
+                LayerPin &pin = ld.inputBlobsId[i];
+                scales[pin.lid][pin.oid] = scales[ld.id][0];
+                zeropoints[pin.lid][pin.oid] = zeropoints[ld.id][0];
+            }
+        }
+    }
+
+    // Create a new Net and add quantized layers to it.
     Net dstNet;
     dstNet.setInputsNames(impl->netInputLayer->outNames);
-    std::vector<std::vector<float> > layerScales;
-    std::vector<std::vector<int> > layerZeropoints;
     for (Impl::MapIdToLayerData::iterator it = impl->layers.begin(); it != impl->layers.end(); it++)
     {
         LayerData ld = it->second;
-        std::vector<float> sc;
-        std::vector<int> zp;
         if (ld.id == 0)
         {
-            for (int i = 0; i < ld.outputBlobs.size(); i++)
-                impl->getQuantizationParams(ld.outputBlobs[i], "MinMax", sc, zp);
             LayerData &quantInpLd = dstNet.impl->layers[0];
             quantInpLd.dtype = inputsDtype;
-            quantInpLd.params.set("scales", DictValue::arrayReal(sc.data(), sc.size()));
-            quantInpLd.params.set("zeropoints", DictValue::arrayInt(zp.data(), zp.size()));
-            layerScales.push_back(sc);
-            layerZeropoints.push_back(zp);
+            quantInpLd.params.set("scales", DictValue::arrayReal(scales[0].data(), scales[0].size()));
+            quantInpLd.params.set("zeropoints", DictValue::arrayInt(zeropoints[0].data(), zeropoints[0].size()));
             continue;
         }
-        for (int i = 0; i < ld.inputBlobsId.size(); i++)
-        {
-            LayerPin &pin = ld.inputBlobsId[i];
-            sc.push_back(layerScales[pin.lid][pin.oid]);
-            zp.push_back(layerZeropoints[pin.lid][pin.oid]);
-        }
-        impl->quantizeLayer(ld, sc, zp);
-        ld.params.set("scales", DictValue::arrayReal(sc.data(), sc.size()));
-        ld.params.set("zeropoints", DictValue::arrayInt(zp.data(), zp.size()));
 
-        // Check and add quantize/dequantize node before layer
         std::vector<LayerPin> inpPins = ld.inputBlobsId;
+        // Fill input and output scales/zeropoints for the layer
+        std::vector<std::vector<float> > inp_out_sc(2);
+        std::vector<std::vector<int> > inp_out_zp(2);
         for (int i = 0; i < inpPins.size(); i++)
         {
             LayerPin &pin = inpPins[i];
-            String inpLayerName = impl->getLayerName(pin.lid);
-            LayerData &inpLd = dstNet.impl->getLayerData(inpLayerName);
+            inp_out_sc[0].push_back(scales[pin.lid][pin.oid]);
+            inp_out_zp[0].push_back(zeropoints[pin.lid][pin.oid]);
+        }
+        inp_out_sc[1] = scales[ld.id];
+        inp_out_zp[1] = zeropoints[ld.id];
+
+        // Quantize layer
+        Ptr<Layer> layer = ld.layerInstance;
+        if (layer->tryQuantize(inp_out_sc, inp_out_zp, ld.params))
+        {
+            ld.type += "Int8";
+            ld.dtype = CV_8S;
+            scales[ld.id] = inp_out_sc[1];
+            zeropoints[ld.id] = inp_out_zp[1];
+        }
+        ld.params.set("scales", DictValue::arrayReal(inp_out_sc[1].data(), inp_out_sc[1].size()));
+        ld.params.set("zeropoints", DictValue::arrayInt(inp_out_zp[1].data(), inp_out_zp[1].size()));
+
+        // Check and add quantize/dequantize node before layer
+        for (int i = 0; i < inpPins.size(); i++)
+        {
+            LayerPin &pin = inpPins[i];
+            LayerData &inpLd = dstNet.impl->getLayerData(impl->getLayerName(pin.lid));
+            pin.lid = inpLd.id;
             if (inpLd.dtype != ld.dtype)
             {
-                LayerParams lp;
-                lp.set("scales", layerScales[pin.lid][pin.oid]);
-                lp.set("zeropoints", layerZeropoints[pin.lid][pin.oid]);
-                lp.name = inpLd.name + ((inpLd.dtype == CV_32F && ld.dtype == CV_8S) ? "/quantize/" : "/dequantize/") + ld.name;
-                lp.type = (inpLd.dtype == CV_32F && ld.dtype == CV_8S) ? "Quantize" : "Dequantize";
-                int newLid = dstNet.addLayer(lp.name, lp.type, ld.dtype, lp);
-                dstNet.connect(inpLd.id, pin.oid, newLid, 0);
-                pin.lid = newLid; pin.oid = 0;
+                String layerName = (inpLd.dtype == CV_32F && ld.dtype == CV_8S) ? cv::format("quantize/%s/%d", inpLd.name.c_str(), pin.oid)
+                                                                                : cv::format("dequantize/%s/%d", inpLd.name.c_str(), pin.oid);
+                // Check if quantize/dequantize node for the input layer already exists
+                if (dstNet.impl->getLayerId(layerName) >= 0)
+                {
+                    pin.lid = dstNet.impl->getLayerId(layerName);
+                    pin.oid = 0;
+                }
+                else
+                {
+                    LayerParams lp;
+                    lp.set("scales", inp_out_sc[0][i]);
+                    lp.set("zeropoints", inp_out_zp[0][i]);
+                    lp.name = layerName;
+                    lp.type = (inpLd.dtype == CV_32F && ld.dtype == CV_8S) ? "Quantize" : "Dequantize";
+                    int newLid = dstNet.addLayer(lp.name, lp.type, ld.dtype, lp);
+                    dstNet.connect(pin.lid, pin.oid, newLid, 0);
+                    pin.lid = newLid; pin.oid = 0;
+                }
             }
-            else
-                pin.lid = inpLd.id;
         }
+
         // Add quantized layer to Net and connect to its inputs.
         int newLid = dstNet.addLayer(ld.name, ld.type, ld.dtype, ld.params);
         for( int i = 0; i < inpPins.size(); i++ )
-        {
             dstNet.connect(inpPins[i].lid, inpPins[i].oid, newLid, i);
-        }
-        layerScales.push_back(sc);
-        layerZeropoints.push_back(zp);
 
         // If the layer is a output layer, add quantize/dequantize node after it based on output's data type.
         if (ld.requiredOutputs.size() == 0 && ld.dtype != outputsDtype)
         {
             LayerParams lp;
-            lp.set("scales", sc[0]);
-            lp.set("zeropoints", zp[0]);
+            lp.set("scales", inp_out_sc[1][0]);
+            lp.set("zeropoints", inp_out_zp[1][0]);
             lp.name = ((ld.dtype == CV_32F && outputsDtype == CV_8S) ? "quantize/" : "dequantize/") + ld.name;
             lp.type = (ld.dtype == CV_32F && outputsDtype == CV_8S) ? "Quantize" : "Dequantize";
             dstNet.addLayerToPrev(lp.name, lp.type, outputsDtype, lp);
         }
     }
     dstNet.impl->netWasQuantized = true;
-    impl->clear();
+    enableFusion(true);
     return dstNet;
 }
 

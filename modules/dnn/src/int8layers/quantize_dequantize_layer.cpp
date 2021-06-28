@@ -116,7 +116,7 @@ public:
     {
         CV_Assert(inputs.size() == 1);
         Layer::getMemoryShapes(inputs, requiredOutputs, outputs, internals);
-        return true;
+        return false;
     }
 
     virtual void finalize(InputArrayOfArrays inputs_arr, OutputArrayOfArrays outputs_arr) CV_OVERRIDE

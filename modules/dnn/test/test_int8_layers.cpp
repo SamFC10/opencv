@@ -146,7 +146,7 @@ TEST_P(Test_Int8_layers, Convolution2D)
 
 TEST_P(Test_Int8_layers, Convolution3D)
 {
-    testLayer("conv3d", "TensorFlow", 0.00742, 0.02434);
+    testLayer("conv3d", "TensorFlow", 0.00734, 0.02434);
     testLayer("conv3d", "ONNX", 0.00353, 0.00941);
     testLayer("conv3d_bias", "ONNX", 0.00129, 0.00249);
 }
@@ -161,10 +161,10 @@ TEST_P(Test_Int8_layers, Flatten)
 TEST_P(Test_Int8_layers, Padding)
 {
     testLayer("padding_valid", "TensorFlow", 0.0026, 0.0064);
-    testLayer("padding_same", "TensorFlow", 0.008, 0.032);
+    testLayer("padding_same", "TensorFlow", 0.0081, 0.032);
     testLayer("spatial_padding", "TensorFlow", 0.0078, 0.028);
     testLayer("mirror_pad", "TensorFlow", 0.0064, 0.013);
-    testLayer("pad_and_concat", "TensorFlow", 0.0026, 0.0121);
+    testLayer("pad_and_concat", "TensorFlow", 0.0021, 0.0098);
     testLayer("padding", "ONNX", 0.0005, 0.0069);
     testLayer("ReflectionPad2d", "ONNX", 0.00062, 0.0018);
     testLayer("ZeroPad2d", "ONNX", 0.00037, 0.0018);
@@ -183,26 +183,26 @@ TEST_P(Test_Int8_layers, AvePooling)
 
 TEST_P(Test_Int8_layers, MaxPooling)
 {
-    testLayer("pool_conv_1d", "ONNX", 0.0005, 0.0013);
-    testLayer("pool_conv_3d", "ONNX", 0.00426, 0.0118);
+    testLayer("pool_conv_1d", "ONNX", 0.0006, 0.0015);
+    testLayer("pool_conv_3d", "ONNX", 0.0033, 0.0124);
 
     /* All the below tests have MaxPooling as last layer, so computeMaxIdx is set to true
-       which is not supported by int8 maxpooling.
-    testLayer("max_pool_even", "TensorFlow", 0.0062, 0.0184);
-    testLayer("max_pool_odd_valid", "TensorFlow", 0.0064, 0.0133);
-    testLayer("conv_pool_nchw", "TensorFlow", 0.009, 0.033);
-    testLayer("max_pool3d", "TensorFlow", 0.0047, 0.012);
-    testLayer("maxpooling_1d", "ONNX", 0.0049, 0.0097);
-    testLayer("two_maxpooling_1d", "ONNX", 0.0046, 0.0132);
-    testLayer("maxpooling", "ONNX", 0.0069, 0.0115);
-    testLayer("two_maxpooling", "ONNX", 0.0049, 0.0097);
-    testLayer("max_pool3d", "ONNX", 0.0069, 0.0112);*/
+       which is not supported by int8 maxpooling
+    testLayer("max_pool_even", "TensorFlow", 0.0048, 0.0139);
+    testLayer("max_pool_odd_valid", "TensorFlow", 0.0043, 0.012);
+    testLayer("conv_pool_nchw", "TensorFlow", 0.007, 0.025);
+    testLayer("max_pool3d", "TensorFlow", 0.0025, 0.0058);
+    testLayer("maxpooling_1d", "ONNX", 0.0018, 0.0037);
+    testLayer("two_maxpooling_1d", "ONNX", 0.0037, 0.0052);
+    testLayer("maxpooling", "ONNX", 0.0034, 0.0065);
+    testLayer("two_maxpooling", "ONNX", 0.0025, 0.0052);
+    testLayer("max_pool3d", "ONNX", 0.0028, 0.0069);*/
 }
 
 TEST_P(Test_Int8_layers, ReLU)
 {
-    testLayer("layer_relu", "Caffe", 0.001, 0.004);
-    testLayer("ReLU", "ONNX", 0.0025, 0.012);
+    testLayer("layer_relu", "Caffe", 0.0005, 0.002);
+    testLayer("ReLU", "ONNX", 0.0012, 0.0047);
 }
 
 TEST_P(Test_Int8_layers, LeakyReLU)
@@ -212,15 +212,15 @@ TEST_P(Test_Int8_layers, LeakyReLU)
 
 TEST_P(Test_Int8_layers, ReLU6)
 {
-    testLayer("keras_relu6", "TensorFlow", 0.0036, 0.0092);
-    testLayer("keras_relu6", "TensorFlow", 0.0036, 0.0092, 1, 1, false, true, true);
+    testLayer("keras_relu6", "TensorFlow", 0.0018, 0.0062);
+    testLayer("keras_relu6", "TensorFlow", 0.0018, 0.0062, 1, 1, false, true, true);
 }
 
 TEST_P(Test_Int8_layers, Sigmoid)
 {
-    testLayer("maxpooling_sigmoid", "ONNX", 0.0013, 0.0046);
-    testLayer("maxpooling_sigmoid_dynamic_axes", "ONNX", 0.00132, 0.0042);
-    testLayer("maxpooling_sigmoid_1d", "ONNX", 0.00121, 0.0037);
+    testLayer("maxpooling_sigmoid", "ONNX", 0.0011, 0.0032);
+    testLayer("maxpooling_sigmoid_dynamic_axes", "ONNX", 0.0011, 0.0032);
+    testLayer("maxpooling_sigmoid_1d", "ONNX", 0.0011, 0.0037);
 }
 
 TEST_P(Test_Int8_layers, Mish)
@@ -236,6 +236,13 @@ TEST_P(Test_Int8_layers, Softmax)
     testLayer("softmax", "ONNX", 0.0016, 0.0028);
     testLayer("log_softmax", "ONNX", 0.014, 0.025);
     testLayer("softmax_unfused", "ONNX", 0.0009, 0.0021);
+}
+
+TEST_P(Test_Int8_layers, Concat)
+{
+    testLayer("layer_concat_shared_input", "Caffe", 0.0076, 0.029, 1, 1, true, false);
+    testLayer("concat_3d", "TensorFlow", 0.005, 0.014);
+    testLayer("concatenation", "ONNX", 0.0032, 0.009);
 }
 
 // TODO : skip this test for all other backends except OpenCV/CPU.

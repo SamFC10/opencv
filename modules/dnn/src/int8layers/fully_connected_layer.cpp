@@ -50,19 +50,6 @@ namespace cv
 namespace dnn
 {
 
-#if CV_SIMD
-static inline v_int32x4 v_output_stage(const v_int32x4& accum, const v_int32x4& multiplier,
-                                       const int& outZp)
-{
-    v_int32x4 mul = accum * multiplier;
-    v_int32x4 nudge = v_setall_s32(1 << 21);
-    v_int32x4 output = v_setall_s32(outZp) + ((mul+nudge) >> 22);
-
-    v_int32x4 qmin = v_setall_s32(-128), qmax = v_setall_s32(127);
-    return v_min(v_max(output, qmin), qmax);
-}
-#endif
-
 class FullyConnectedLayerInt8Impl CV_FINAL : public InnerProductLayerInt8
 {
 public:
@@ -95,6 +82,7 @@ public:
                 blobs[0].copyTo(weightsMat);
             }
             biasMat = blobs[1] = blobs[1].reshape(1, 1);
+            outputMultiplier = blobs[2];
         }
     }
 
@@ -140,10 +128,10 @@ public:
     class FullyConnected : public ParallelLoopBody
     {
     public:
-        FullyConnected() : srcMat(0), weights(0), biasMat(0), additionalParams(0), activationLUT(0), activ(0),
+        FullyConnected() : srcMat(0), weights(0), biasMat(0), outputMultiplier(0), activationLUT(0), activ(0),
                            dstMat(0), nstripes(0), outZp(0), useAVX2(false), useAVX512(false) {}
 
-        static void run(const Mat& srcMat, const Mat& weights, const Mat& biasMat, const Mat& additionalParams,
+        static void run(const Mat& srcMat, const Mat& weights, const Mat& biasMat, const Mat& outputMultiplier,
                         const Mat& activationLUT, Mat& dstMat, const ActivationLayerInt8* activ, int nstripes, int outZp)
         {
             CV_Assert( srcMat.dims == 2 && srcMat.cols == weights.cols &&
@@ -157,7 +145,7 @@ public:
             p.srcMat = &srcMat;
             p.weights = &weights;
             p.biasMat = &biasMat;
-            p.additionalParams = &additionalParams;
+            p.outputMultiplier = &outputMultiplier;
             p.activationLUT = &activationLUT;
             p.dstMat = &dstMat;
             p.nstripes = nstripes;
@@ -196,7 +184,7 @@ public:
                 const int8_t* wptr = weights->ptr<int8_t>(delta);
                 int* dptr = dstMat->ptr<int>(sampleIdx) + delta;
                 const int* biasptr = biasMat->ptr<int>() + delta;
-                const int* multptr = additionalParams->ptr<int>() + delta;
+                const float* multptr = outputMultiplier->ptr<float>() + delta;
                 int nw = std::min(nw0 - delta, (int)(stripeEnd - ofs));
 
                 memcpy(sptr, sptr_, vecsize*sizeof(sptr[0]));
@@ -215,12 +203,11 @@ public:
             #if CV_SIMD
                     for( ; i  <= nw - 4; i += 4, wptr += 4*wstep )
                     {
-                        v_int32x4 vs0 = v_setall_s32(0);
-                        v_int32x4 vs1 = v_setall_s32(0);
-                        v_int32x4 vs2 = v_setall_s32(0);
-                        v_int32x4 vs3 = v_setall_s32(0);
+                        v_int32x4 vs0 = v_setzero_s32(), vs1 = v_setzero_s32(),
+                                  vs2 = v_setzero_s32(), vs3 = v_setzero_s32();
+                        v_int32x4 outzp = v_setall_s32(outZp), outmin = v_setall_s32(-128), outmax = v_setall_s32(127);
                         v_int32x4 s = v_load(biasptr + i);
-                        v_int32x4 mult = v_load(multptr + i);
+                        v_float32x4 mult = v_load(multptr + i);
 
                         for( k = 0; k < vecsize; k += 16 )
                         {
@@ -232,21 +219,22 @@ public:
                         }
 
                         s += v_int32x4(v_reduce_sum(vs0), v_reduce_sum(vs1), v_reduce_sum(vs2), v_reduce_sum(vs3));
-                        v_store(dptr + i, v_output_stage(s, mult, outZp));
+                        v_int32x4 out = outzp + v_round(v_cvt_f32(s)*mult);
+                        v_store(dptr + i, v_min(v_max(out, outmin), outmax));
                     }
             #endif
 
                     for( ; i < nw; i++, wptr += wstep )
                     {
                         int s0 = biasptr[i];
-                        int mult0 = multptr[i];
+                        float mult0 = multptr[i];
 
                         for( k = 0; k < vecsize; k++ )
                         {
                             int8_t v = sptr[k];
                             s0 += (int)v*wptr[k];
                         }
-                        int out0 = outZp + ((s0*mult0 + (1 << 21)) >> 22);
+                        int out0 = outZp + (int)std::round(s0*mult0);
                         dptr[i] = std::min(std::max(out0, -128), 127);
                     }
                 }
@@ -258,7 +246,7 @@ public:
             }
         }
 
-        const Mat *srcMat, *weights, *biasMat, *additionalParams, *activationLUT;
+        const Mat *srcMat, *weights, *biasMat, *outputMultiplier, *activationLUT;
         const ActivationLayerInt8* activ;
         Mat* dstMat;
         int nstripes, outZp;
@@ -283,7 +271,7 @@ public:
         Mat dstMatInt32= Mat(shape(dstMat), CV_32S);
 
         const int nstripes = getNumThreads();
-        FullyConnected::run(srcMat, weightsMat, biasMat, blobs[2], activationLUT, dstMatInt32, activ.get(), nstripes, output_zp);
+        FullyConnected::run(srcMat, weightsMat, biasMat, outputMultiplier, activationLUT, dstMatInt32, activ.get(), nstripes, output_zp);
         dstMatInt32.convertTo(dstMat, CV_8S);
     }
 
@@ -303,7 +291,7 @@ public:
 
     }
 
-    Mat weightsMat, biasMat, activationLUT;
+    Mat weightsMat, biasMat, outputMultiplier, activationLUT;
     Ptr<ActivationLayerInt8> activ;
 };
 

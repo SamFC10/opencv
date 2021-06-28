@@ -394,6 +394,12 @@ public:
         return Ptr<BackendNode>(new InfEngineNgraphNode(concat));
     }
 #endif  // HAVE_DNN_NGRAPH
+
+    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
+                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    {
+        return true;
+    }
 };
 
 Ptr<ConcatLayer> ConcatLayer::create(const LayerParams& params)

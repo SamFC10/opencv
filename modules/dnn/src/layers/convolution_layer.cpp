@@ -2071,58 +2071,7 @@ public:
     virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
                              std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
-        /*
-        Convolution is done by transforming the inputs using the im2row method, and then a dot-product with the weights.
-        A single output value Y is obtained by a dot-product of one row of inputs X with weights W and adding bias B to it, i.e.
-        Y = sum_over_i(X[i] * W[i]) + B    _(a)
-
-        The quantization scheme was defined as :
-        real_value = scale * (quantized_value - zero_point)
-        Substituting the above equation in (a) we get:
-        S3*(Y_quant - Z3) = sum_over_i((S1*(X_quant[i] - Z1)) * (S2*(W_quant[i] - Z2)) + S4*(B_quant - Z4)   _(b)
-
-        Simplifying the dot-product,
-        = sum_over_i((S1*(X_quant[i] - Z1)) * (S2*(W_quant[i] - Z2))
-        = S1*S2 * sum_over_i(X_quant[i]*W_quant[i] - Z1*W_quant[i] - Z2*X_quant[i] + Z1*Z2)
-        = S1*S2 * (sum_over_i(X_quant[i]*W_quant[i]) - Z1*sum_over_i(W_quant[i]) - Z2*sum_over_i(X_quant[i]) + Z1*Z2*sum_over_i(1))
-
-        For a convolution, the weights W remains fixed whereas inputs X keep changing. We pre-compute the 'sum_over_i(W_quant[i])' value
-        and store as an additional parameter. This cannot be done for 'sum_over_i(X_quant[i])', so this value has to be computed at runtime.
-        To avoid this additional overhead, we fix the zero-point of weights to 0, i.e. Z2 = 0. So the dot-product becomes,
-        = S1*S2 * (sum_over_i(X_quant[i]*W_quant[i]) - Z1*sum_over_i(W_quant[i]))  _(c)
-
-        Plugging (c) in (b), we get
-        S3*(Y_quant - Z3) = S1*S2 * (sum_over_i(X_quant[i]*W_quant[i]) - Z1*sum_over_i(W_quant[i])) + S4*(B_quant - Z4)
-        To fuse bias addition, we set S4 = S1*S2 and Z4 = 0.
-        S3*(Y_quant - Z3) = S1*S2 * (sum_over_i(X_quant[i]*W_quant[i]) - Z1*sum_over_i(W_quant[i]) + B_quant)
-        Y_quant = Z3 + (S1*S2/S3) * (sum_over_i(X_quant[i]*W_quant[i]) - Z1*sum_over_i(W_quant[i]) + B_quant)
-
-        The dot-product of X_quant with W_quant is stored in an int32 accumulator to avoid overflow. Thus the above equation in
-        simplified terms can be written as,
-        Y_quant = Z3 + real_multiplier * (int32_accumulator + offset + B_quant)
-        Y_quant = Z3 + real_multiplier * int32_value
-
-        We are not done yet since the multiplication is a floating point multiplication. To enable an end-to-end fixed point implementation,
-        we need to approximate the real_mutliplier to a quantized_multiplier and perform a fixed point multiplication instead.
-
-        Let the bits precision of the quantized multiplier be B.
-        Define quantized_multiplier = std::round(real_mutliplier * 2^(B - 1))
-
-        Thus,
-        real_multiplier * int32_value = (real_mutliplier * 2^(B - 1) * int32_value)/2^(B - 1)
-                                      = (quantized_multiplier * int32_value)/2^(B - 1)   (approximately equal)
-                                      = Rounding Right Shift(quantized_multiplier * int32_value, B - 1)
-
-        This is where our implementation slightly differs from the paper chosen as reference. The paper suggests to use 32 bits of precision
-        for the quantized_multiplier. This means the quantized_multiplier and int32_value have to be type-casted to int64, multiplied and then
-        type cast back to int32. This causes a significant overhead for a simple multiplication. Instead we reduce the bits precision of
-        the quantized multiplier such that there is no possibility of overflow and the multiplication can be done without type-casting to int64.
-        We chose 23 as the bits precision for the quantized multiplier as that was the maximum value which ensured there was no overflow.
-        The improvement in mean absolute error by using 32 bits of precision was in the range of 1e-4 to 1e-5, so there is not much advantage
-        of using higher precision for quantized_multiplier.
-
-        References - https://arxiv.org/pdf/1712.05877.pdf
-        */
+        // References - https://arxiv.org/pdf/1712.05877.pdf
 
         // Quantized convolution with variable weights is not supported.
         if (blobs.empty())
@@ -2132,10 +2081,9 @@ public:
         int inputZp = zeropoints[0][0];
         params.set("input_zeropoint", inputZp);
 
-        const int bits_precision = 23;
-        Mat additionalParams(1, numOutput, CV_32S);
         Mat weightsQuantized(weightsMat.rows, weightsMat.cols, CV_8S);
         Mat biasQuantized(1, numOutput, CV_32S);
+        Mat outputMultiplier(1, numOutput, CV_32F);
         double realMin, realMax, weightsScale;
 
         for( int i = 0; i < numOutput; i++ )
@@ -2151,15 +2099,14 @@ public:
             float biasScale = inputScale * weightsScale;
             biasQuantized.at<int>(i) = (int)std::round(biasvec[i]/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]);
 
-            // Store quantized multiplier
-            float realMult = (inputScale * weightsScale) / outputScale;
-            additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1)));
+            // Store multiplier
+            outputMultiplier.at<float>(i) = biasScale / outputScale;
         }
 
         params.blobs.clear();
         params.blobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
         params.blobs.push_back(biasQuantized);
-        params.blobs.push_back(additionalParams);
+        params.blobs.push_back(outputMultiplier);
         return true;
     }
 

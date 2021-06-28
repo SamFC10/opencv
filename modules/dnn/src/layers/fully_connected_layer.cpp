@@ -616,10 +616,9 @@ public:
         float inputScale = scales[0][0], outputScale = scales[1][0];
         int inputZp = zeropoints[0][0];
 
-        const int bits_precision = 23;
         Mat weightsQuantized(weightsMat.rows, weightsMat.cols, CV_8S);
         Mat biasQuantized(1, numOutput, CV_32S);
-        Mat additionalParams(1, numOutput, CV_32S);
+        Mat outputMultiplier(1, numOutput, CV_32F);
 
         double realMin, realMax, weightsScale;
         for( int i = 0; i < numOutput; i++ )
@@ -635,15 +634,14 @@ public:
             float biasScale = inputScale * weightsScale;
             biasQuantized.at<int>(i) = (int)std::round(biasMat.at<float>(i)/biasScale) - inputZp*(cv::sum(weightsQuantized.row(i))[0]);
 
-            // Compute and store multiplier
-            float realMult = (inputScale * weightsScale)/outputScale;
-            additionalParams.at<int>(i) = (int)std::round(realMult * (1 << (bits_precision - 1)));
+            // Store multiplier
+            outputMultiplier.at<float>(i) = biasScale / outputScale;
         }
 
         params.blobs.clear();
         params.blobs.push_back(weightsQuantized.reshape(1, shape(blobs[0])));
         params.blobs.push_back(biasQuantized);
-        params.blobs.push_back(additionalParams);
+        params.blobs.push_back(outputMultiplier);
         return true;
     }
 

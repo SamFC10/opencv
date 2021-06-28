@@ -228,6 +228,7 @@ CV__DNN_INLINE_NS_BEGIN
     {
     public:
         int input_zp, output_zp;
+        float output_sc;
         static Ptr<BaseConvolutionLayer> create(const LayerParams& params);
     };
 
@@ -371,6 +372,13 @@ CV__DNN_INLINE_NS_BEGIN
         bool padding;
 
         static Ptr<ConcatLayer> create(const LayerParams &params);
+    };
+
+    class CV_EXPORTS ConcatLayerInt8 : public ConcatLayer
+    {
+    public:
+        int output_zp;
+        static Ptr<ConcatLayerInt8> create(const LayerParams& params);
     };
 
     class CV_EXPORTS SplitLayer : public Layer
