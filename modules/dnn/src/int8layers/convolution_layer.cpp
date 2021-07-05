@@ -178,17 +178,16 @@ public:
         CV_Assert((w.empty() || w.type() == CV_32F) &&
                   (b.empty() || b.type() == CV_32F));
 
-        // TODO : Fusing weights has not been tested as currently no int8 layer supports this type of fusion.
-        // float new_scale = top->scale;
-        // int new_zeropoint = top->zeropoint;
-        // fuseWeights(w, b);
-        // output_sc = new_scale;
-        // output_zp = new_zeropoint;
-        fuseWeights(w, b);
+        float new_sc;
+        int new_zp;
+        top->getScaleZeropoint(new_sc, new_zp);
+        fuseWeights(w, b, new_sc);
+        output_sc = new_sc;
+        output_zp = new_zp;
         return true;
     }
 
-    virtual void fuseWeights(const Mat& w_, const Mat& b_) = 0;
+    virtual void fuseWeights(const Mat& w_, const Mat& b_, const float& new_sc) = 0;
 };
 
 //TODO: simultaneously convolution and bias addition for cache optimization
@@ -312,7 +311,7 @@ public:
         return BaseConvolutionLayerInt8Impl::tryFuse(top);
     }
 
-    void fuseWeights(const Mat& w_, const Mat& b_) CV_OVERRIDE
+    void fuseWeights(const Mat& w_, const Mat& b_, const float& new_sc) CV_OVERRIDE
     {
         const int outCn = weightsMat.size[0];
         Mat w = w_.total() == 1 ? Mat(1, outCn, CV_32F, Scalar(w_.at<float>(0))) : w_;
@@ -322,11 +321,14 @@ public:
 
         for (int i = 0; i < outCn; ++i)
         {
+            float off = outputMultiplier.at<float>(i) * output_sc;
             if (!w.empty())
-                outputMultiplier.at<float>(i) *= (w.at<float>(i) * output_sc);
+                off *= w.at<float>(i);
 
             if (!b.empty())
-                biasvec[i] += (int)std::round(b.at<float>(i)/outputMultiplier.at<float>(i));
+                biasvec[i] += (int)std::round(b.at<float>(i)/off);
+
+            outputMultiplier.at<float>(i) = off/new_sc;
         }
         biasvec[outCn] = biasvec[outCn+1] = biasvec[outCn-1];
     }

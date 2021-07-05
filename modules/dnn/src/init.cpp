@@ -159,6 +159,8 @@ void initializeLayerFactory()
     CV_DNN_REGISTER_LAYER_CLASS(SoftmaxInt8,      SoftmaxLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(SoftMaxInt8,      SoftmaxLayerInt8);
     CV_DNN_REGISTER_LAYER_CLASS(ConcatInt8,       ConcatLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(BatchNormInt8,    BatchNormLayerInt8);
+    CV_DNN_REGISTER_LAYER_CLASS(ScaleInt8,        ScaleLayerInt8);
 }
 
 CV__DNN_INLINE_NS_END

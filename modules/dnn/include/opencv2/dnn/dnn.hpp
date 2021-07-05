@@ -378,6 +378,16 @@ CV__DNN_INLINE_NS_BEGIN
         virtual void getScaleShift(Mat& scale, Mat& shift) const;
 
         /**
+         * @brief Returns scale and zeropoint of layers
+         * @param[out] scale Output scale
+         * @param[out] zeropoint Output zeropoint
+         *
+         * By default, @p scale is 1 and @p zeropoint is 0.
+         */
+        virtual void getScaleZeropoint(float& scale, int& zeropoint) const;
+
+
+        /**
          * @brief "Deattaches" all the layers, attached to particular layer.
          */
         virtual void unsetAttached();

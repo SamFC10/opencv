@@ -245,6 +245,27 @@ TEST_P(Test_Int8_layers, Concat)
     testLayer("concatenation", "ONNX", 0.0032, 0.009);
 }
 
+TEST_P(Test_Int8_layers, BatchNorm)
+{
+    testLayer("layer_batch_norm", "Caffe", 0.0061, 0.019, 1, 1, true);
+    testLayer("fused_batch_norm", "TensorFlow", 0.0063, 0.02);
+    testLayer("batch_norm_text", "TensorFlow", 0.0048, 0.013, 1, 1, false, true, true);
+    testLayer("unfused_batch_norm", "TensorFlow", 0.0076, 0.019);
+    testLayer("fused_batch_norm_no_gamma", "TensorFlow", 0.0067, 0.015);
+    testLayer("unfused_batch_norm_no_gamma", "TensorFlow", 0.0123, 0.044);
+    testLayer("switch_identity", "TensorFlow", 0.0035, 0.011);
+    testLayer("batch_norm3d", "TensorFlow", 0.0077, 0.02);
+    testLayer("batch_norm", "ONNX", 0.0012, 0.0049);
+    testLayer("batch_norm_3d", "ONNX", 0.0039, 0.012);
+    testLayer("frozenBatchNorm2d", "ONNX", 0.001, 0.0018);
+    testLayer("batch_norm_subgraph", "ONNX", 0.0049, 0.0098);
+}
+
+TEST_P(Test_Int8_layers, Scale)
+{
+    testLayer("batch_norm", "TensorFlow", 0.0028, 0.0098);
+}
+
 // TODO : skip this test for all other backends except OpenCV/CPU.
 INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_layers, dnnBackendsAndTargets());
 }} // namespace

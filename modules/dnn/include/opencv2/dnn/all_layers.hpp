@@ -613,6 +613,14 @@ CV__DNN_INLINE_NS_BEGIN
         static Ptr<BatchNormLayer> create(const LayerParams &params);
     };
 
+    class CV_EXPORTS BatchNormLayerInt8 : public BatchNormLayer
+    {
+    public:
+        float input_sc, output_sc;
+        int input_zp, output_zp;
+        static Ptr<BatchNormLayerInt8> create(const LayerParams &params);
+    };
+
     class CV_EXPORTS MaxUnpoolLayer : public Layer
     {
     public:
@@ -630,6 +638,14 @@ CV__DNN_INLINE_NS_BEGIN
         int axis;
 
         static Ptr<ScaleLayer> create(const LayerParams& params);
+    };
+
+    class CV_EXPORTS ScaleLayerInt8 : public ScaleLayer
+    {
+    public:
+        float output_sc;
+        int output_zp;
+        static Ptr<ScaleLayerInt8> create(const LayerParams &params);
     };
 
     class CV_EXPORTS ShiftLayer : public Layer

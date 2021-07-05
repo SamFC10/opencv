@@ -344,6 +344,22 @@ public:
         shift = (hasBias && !blobs.empty()) ? blobs.back() : Mat();
     }
 
+    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
+                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    {
+        params.set("input_scale", DictValue::arrayReal(scales[0].data(), scales[0].size()));
+        params.set("input_zeropoint", DictValue::arrayReal(zeropoints[0].data(), zeropoints[0].size()));
+
+        params.blobs.clear();
+        if (hasWeights && !blobs.empty())
+            params.blobs.push_back(blobs[0]);
+
+        if (hasBias && !blobs.empty())
+            params.blobs.push_back(blobs.back());
+
+        return true;
+    }
+
     virtual int64 getFLOPS(const std::vector<MatShape> &inputs,
                            const std::vector<MatShape> &outputs) const CV_OVERRIDE
     {

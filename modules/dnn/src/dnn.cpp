@@ -5398,6 +5398,12 @@ void Layer::getScaleShift(Mat& scale, Mat& shift) const
     shift = Mat();
 }
 
+void Layer::getScaleZeropoint(float& scale, int& zeropoint) const
+{
+    scale = 1.f;
+    zeropoint = 0;
+}
+
 void Layer::unsetAttached()
 {
     setActivation(Ptr<ActivationLayer>());
