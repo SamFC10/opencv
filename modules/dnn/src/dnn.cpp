@@ -4318,9 +4318,29 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
 
         std::vector<float> sc;
         std::vector<int> zp;
-        for (int i = 0; i < ld.outputBlobs.size(); i++)
-            impl->getQuantizationParams(ld.outputBlobs[i], sc, zp);
-
+        if (ld.type == "TanH")
+        {
+            sc.push_back(1.f/128);
+            zp.push_back(0);
+        }
+        else if (ld.type == "Sigmoid" || ld.type == "Softmax" || ld.type == "SoftMax")
+        {
+            if (ld.params.get<bool>("log_softmax", false))
+            {
+                sc.push_back(16.f/256);
+                zp.push_back(127);
+            }
+            else
+            {
+                sc.push_back(1.f/256);
+                zp.push_back(-128);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < ld.outputBlobs.size(); i++)
+                impl->getQuantizationParams(ld.outputBlobs[i], sc, zp);
+        }
         scales.push_back(sc);
         zeropoints.push_back(zp);
     }
@@ -4376,8 +4396,6 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
         {
             ld.type += "Int8";
             ld.dtype = CV_8S;
-            scales[ld.id] = inp_out_sc[1];
-            zeropoints[ld.id] = inp_out_zp[1];
         }
         ld.params.set("scales", DictValue::arrayReal(inp_out_sc[1].data(), inp_out_sc[1].size()));
         ld.params.set("zeropoints", DictValue::arrayInt(inp_out_zp[1].data(), inp_out_zp[1].size()));
@@ -5530,8 +5548,8 @@ void Layer::run(const std::vector<Mat> &inputs, std::vector<Mat> &outputs, std::
     this->forward(inputs, outputs, internals);
 }
 
-bool Layer::tryQuantize(std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeropoints,
-                        LayerParams& params)
+bool Layer::tryQuantize(const std::vector<std::vector<float> > &scales,
+                        const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
 {
     return false;
 }

@@ -409,8 +409,8 @@ public:
     }
 #endif  // HAVE_DNN_NGRAPH
 
-    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
-                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         params.set("input_scale", scales[0][0]);
         params.set("input_zeropoint", zeropoints[0][0]);

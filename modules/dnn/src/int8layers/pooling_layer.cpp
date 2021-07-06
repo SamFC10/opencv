@@ -63,6 +63,9 @@ public:
         computeMaxIdx = false;
         globalPooling = false;
         isGlobalPooling = std::vector<bool>(3, false);
+        output_zp = params.get<int>("zeropoints");
+        input_zp = params.get<int>("input_zeropoint", 0);
+        multiplier = params.get<float>("multiplier", 1.f);
 
         hasDynamicShapes = params.get<bool>("has_dynamic_shapes", false);
         shapesInitialized = !hasDynamicShapes;
@@ -75,6 +78,8 @@ public:
                 type = MAX;
             else if (pool == "ave")
                 type = AVE;
+            else if (pool == "sum")
+                type = SUM;
             else
                 CV_Error(Error::StsBadArg, "Unknown pooling type \"" + pool + "\"");
 
@@ -87,7 +92,6 @@ public:
         ceilMode = params.get<bool>("ceil_mode", true);
         spatialScale = params.get<float>("spatial_scale", 1);
         avePoolPaddedArea = params.get<bool>("ave_pool_padded_area", true);
-        output_zp = params.get<int>("zeropoints", 0);
     }
 
     void finalize(InputArrayOfArrays inputs_arr, OutputArrayOfArrays outputs_arr) CV_OVERRIDE
@@ -145,7 +149,7 @@ public:
         Ptr<ActivationLayerInt8> activ_int8 = layer.dynamicCast<ActivationLayerInt8>();
         if (!activ_int8.empty())
         {
-            return type == MAX && activ_int8->blobs.empty();
+            return activ_int8->blobs.empty();
         }
         return false;
     }
@@ -167,7 +171,7 @@ public:
                 maxPooling(inputs[0], outputs[0]);
                 break;
             }
-            case AVE:
+            case AVE: case SUM:
                 CV_Assert_N(inputs.size() == 1, outputs.size() == 1);
                 avePooling(inputs[0], outputs[0]);
                 break;
@@ -184,9 +188,10 @@ public:
         Mat *dst;
         int pad_l, pad_t, pad_r, pad_b;
         bool avePoolPaddedArea;
-        int nstripes, outZp;
+        int nstripes, inpZp, outZp;
         std::vector<int> ofsbuf;
         int poolingType;
+        float multiplier;
         float spatialScale;
 
         std::vector<size_t> pads_begin, pads_end;
@@ -194,14 +199,14 @@ public:
         std::vector<size_t> strides;
 
         PoolingInvoker() : src(0), rois(0), dst(0), pad_l(0), pad_t(0), pad_r(0), pad_b(0),
-                           avePoolPaddedArea(false), nstripes(0), outZp(0),
-                           poolingType(MAX), spatialScale(0){}
+                           avePoolPaddedArea(false), nstripes(0), inpZp(0), outZp(0),
+                           poolingType(MAX), multiplier(1), spatialScale(0){}
 
         static void run(const Mat& src, const Mat& rois, Mat& dst,
                         std::vector<size_t> kernel_size, std::vector<size_t> strides,
                         std::vector<size_t> pads_begin, std::vector<size_t> pads_end,
                         bool avePoolPaddedArea, int poolingType, float spatialScale,
-                        int outZp, int nstripes)
+                        float multiplier, int inpZp, int outZp, int nstripes)
         {
             CV_Assert_N(
                       src.isContinuous(), dst.isContinuous(),
@@ -230,9 +235,11 @@ public:
 
             p.avePoolPaddedArea = avePoolPaddedArea;
             p.nstripes = nstripes;
+            p.inpZp = inpZp;
             p.outZp = outZp;
             p.poolingType = poolingType;
             p.spatialScale = spatialScale;
+            p.multiplier = multiplier;
 
             int height = isPool1D ? 1 : src.size[src.dims - 2];
             int width = src.size[src.dims - 1];
@@ -421,7 +428,7 @@ public:
                             dstData[x0] = max_val;
                         }
                     }
-                else if (poolingType == AVE)
+                else if (poolingType == AVE || poolingType == SUM)
                 {
                     for( ; x0 < x1; ++x0)
                     {
@@ -431,16 +438,19 @@ public:
                         xstart = max(xstart, 0);
                         xend = min(xend, inp_width);
 
-                        float real_kernel_area = (dend - dstart) * (yend - ystart) * (xend - xstart);
-                        float padded_kernel_area = xdelta * ydelta * ddelta;
-                        float inv_kernel_area = avePoolPaddedArea ? padded_kernel_area : real_kernel_area;
-                        inv_kernel_area = 1.f / inv_kernel_area;
-                        int padded_sum = avePoolPaddedArea ? (padded_kernel_area - real_kernel_area)*outZp : 0;
+                        int real_kernel_area = (dend - dstart) * (yend - ystart) * (xend - xstart);
+                        int padded_kernel_area = xdelta * ydelta * ddelta;
+                        int kernel_area = avePoolPaddedArea ? padded_kernel_area : real_kernel_area;
+
+                        int bias = (avePoolPaddedArea ? (padded_kernel_area - real_kernel_area) * inpZp : 0)
+                                 - (inpZp * kernel_area);
+                        float inv_kernel_area = poolingType == AVE ? multiplier / kernel_area : multiplier;
 #if CV_SIMD128
                         if( isPool2D && xstart > 0 && x0 + 15 < x1 && (x0 + 15) * stride_w - pad_l + kernel_w < inp_width )
                         {
-                            v_int32x4 sum_val0 = v_setall_s32(padded_sum), sum_val1 = v_setall_s32(padded_sum),
-                                      sum_val2 = v_setall_s32(padded_sum), sum_val3 = v_setall_s32(padded_sum);
+                            v_int32x4 sum_val0 = v_setall_s32(bias), sum_val1 = v_setall_s32(bias),
+                                      sum_val2 = v_setall_s32(bias), sum_val3 = v_setall_s32(bias),
+                                      voutzp = v_setall_s32(outZp);
                             v_float32x4 ikarea = v_setall_f32(inv_kernel_area);
 
                             for (int y = ystart; y < yend; ++y)
@@ -463,10 +473,10 @@ public:
                                 }
                             }
 
-                            sum_val0 = v_round(v_cvt_f32(sum_val0)*ikarea);
-                            sum_val1 = v_round(v_cvt_f32(sum_val1)*ikarea);
-                            sum_val2 = v_round(v_cvt_f32(sum_val2)*ikarea);
-                            sum_val3 = v_round(v_cvt_f32(sum_val3)*ikarea);
+                            sum_val0 = v_round(v_cvt_f32(sum_val0)*ikarea) + voutzp;
+                            sum_val1 = v_round(v_cvt_f32(sum_val1)*ikarea) + voutzp;
+                            sum_val2 = v_round(v_cvt_f32(sum_val2)*ikarea) + voutzp;
+                            sum_val3 = v_round(v_cvt_f32(sum_val3)*ikarea) + voutzp;
 
                             v_store(dstData + x0, v_pack(v_pack(sum_val0, sum_val1), v_pack(sum_val2, sum_val3)));
                             x0 += 15;
@@ -477,12 +487,12 @@ public:
                         {
                             const int8_t* first = srcData + xstart;
                             const int8_t* last = srcData + xend;
-                            int sum_val = padded_sum + std::accumulate(first, last, 0);
-                            dstData[x0] = (int8_t)std::round(sum_val*inv_kernel_area);
+                            int sum_val = bias + std::accumulate(first, last, 0);
+                            dstData[x0] = saturate_cast<int8_t>(outZp + std::round(sum_val*inv_kernel_area));
                         }
                         else
                         {
-                            int sum_val = padded_sum;
+                            int sum_val = bias;
                             for (int d = dstart; d < dend; ++d) {
                                 for (int y = ystart; y < yend; ++y) {
                                     for (int x = xstart; x < xend; ++x) {
@@ -492,7 +502,7 @@ public:
                                     }
                                 }
                             }
-                            dstData[x0] = (int8_t)std::round(sum_val*inv_kernel_area);
+                            dstData[x0] = saturate_cast<int8_t>(outZp + std::round(sum_val*inv_kernel_area));
                         }
                     }
                 }
@@ -504,14 +514,16 @@ public:
     {
         const int nstripes = getNumThreads();
         Mat rois;
-        PoolingInvoker::run(src, rois, dst, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type, spatialScale, output_zp, nstripes);
+        PoolingInvoker::run(src, rois, dst, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type,
+                            spatialScale, multiplier, input_zp, output_zp, nstripes);
     }
 
     void avePooling(Mat &src, Mat &dst)
     {
         const int nstripes = getNumThreads();
         Mat rois;
-        PoolingInvoker::run(src, rois, dst, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type, spatialScale, output_zp, nstripes);
+        PoolingInvoker::run(src, rois, dst, kernel_size, strides, pads_begin, pads_end, avePoolPaddedArea, type,
+                            spatialScale, multiplier, input_zp, output_zp, nstripes);
     }
 
     bool getMemoryShapes(const std::vector<MatShape> &inputs,
@@ -609,6 +621,7 @@ private:
     };
     bool hasDynamicShapes;
     bool shapesInitialized;
+    float multiplier;
 };
 
 Ptr<PoolingLayerInt8> PoolingLayerInt8::create(const LayerParams& params)

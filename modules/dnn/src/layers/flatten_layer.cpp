@@ -227,8 +227,8 @@ virtual Ptr<BackendNode> initNgraph(const std::vector<Ptr<BackendWrapper> >& inp
     }
 #endif
 
-    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
-                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         return true;
     }

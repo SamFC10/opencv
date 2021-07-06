@@ -172,13 +172,13 @@ TEST_P(Test_Int8_layers, Padding)
 
 TEST_P(Test_Int8_layers, AvePooling)
 {
-    testLayer("layer_pooling_ave", "Caffe", 0.0021, 0.0076);
-    testLayer("ave_pool_same", "TensorFlow", 0.00293, 0.008);
-    testLayer("ave_pool3d", "TensorFlow", 0.00465, 0.0113);
-    testLayer("average_pooling_1d", "ONNX", 0.0023, 0.0061);
-    testLayer("average_pooling", "ONNX", 0.0057, 0.011);
-    testLayer("average_pooling_dynamic_axes", "ONNX", 0.0046, 0.0096);
-    testLayer("ave_pool3d", "ONNX", 0.00413, 0.0094);
+    testLayer("layer_pooling_ave", "Caffe", 0.0021, 0.0075);
+    testLayer("ave_pool_same", "TensorFlow", 0.00153, 0.0041);
+    testLayer("ave_pool3d", "TensorFlow", 0.00175, 0.0047);
+    testLayer("average_pooling_1d", "ONNX", 0.002, 0.0048);
+    testLayer("average_pooling", "ONNX", 0.0014, 0.0032);
+    testLayer("average_pooling_dynamic_axes", "ONNX", 0.0014, 0.006);
+    testLayer("ave_pool3d", "ONNX", 0.00063, 0.0016);
 }
 
 TEST_P(Test_Int8_layers, MaxPooling)
@@ -198,6 +198,22 @@ TEST_P(Test_Int8_layers, MaxPooling)
     testLayer("two_maxpooling", "ONNX", 0.0025, 0.0052);
     testLayer("max_pool3d", "ONNX", 0.0028, 0.0069);*/
 }
+
+/*TEST_P(Test_Int8_layers, Reduce)
+{
+    testLayer("reduce_mean", "TensorFlow", 0.0005, 0.0014);
+    testLayer("reduce_mean", "ONNX", 0.00062, 0.0014);
+    testLayer("reduce_mean_axis1", "ONNX", 0.00032, 0.0007);
+    testLayer("reduce_mean_axis2", "ONNX", 0.00033, 0.001);
+    testLayer("reduce_mean3d", "ONNX", 0.00048, 0.0016);
+
+    testLayer("reduce_sum", "TensorFlow", 0.015, 0.031);
+    testLayer("reduce_sum", "ONNX", 0.0025, 0.0048);
+
+    testLayer("reduce_max", "ONNX", 0, 0);
+    testLayer("reduce_max_axis_0", "ONNX", 0.0042, 0.007);
+    testLayer("reduce_max_axis_1", "ONNX", 0.0018, 0.0036);
+}*/
 
 TEST_P(Test_Int8_layers, ReLU)
 {

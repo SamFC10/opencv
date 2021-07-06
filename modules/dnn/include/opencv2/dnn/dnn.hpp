@@ -241,8 +241,8 @@ CV__DNN_INLINE_NS_BEGIN
          *  @param[out] params Quantized parameters required for fixed point implementation of that layer.
          *  @returns True if layer can be quantized.
          */
-        virtual bool tryQuantize(std::vector<std::vector<float> > &scales, std::vector<std::vector<int> > &zeropoints,
-                                 LayerParams& params);
+        virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                                 const std::vector<std::vector<int> > &zeropoints, LayerParams& params);
 
         /** @brief Given the @p input blobs, computes the output @p blobs.
          *  @param[in]  inputs  the input blobs.

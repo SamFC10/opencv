@@ -255,8 +255,8 @@ public:
     }
 #endif
 
-    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
-                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         return func.tryQuantize(scales, zeropoints, params);
     }
@@ -295,7 +295,7 @@ struct BaseFunctor
 
     void getScaleShift(Mat&, Mat&) const {}
 
-    bool tryQuantize(std::vector<std::vector<float>>&, std::vector<std::vector<int>>&, LayerParams&) { return false; }
+    bool tryQuantize(const std::vector<std::vector<float>>&, const std::vector<std::vector<int>>&, LayerParams&) { return false; }
 };
 
 struct ReLUFunctor : public BaseFunctor
@@ -444,17 +444,10 @@ struct ReLUFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
-        if (slope == 0.f)
-        {
-            params.set("activation_min", zeropoints[0][0]);
-            params.set("activation_max", 127);
-            scales[1] = scales[0];
-            zeropoints[1] = zeropoints[0];
-        }
-        else
+        if (slope != 0.f)
         {
             float inpScale = scales[0][0], outScale = scales[1][0];
             int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
@@ -597,15 +590,9 @@ struct ReLU6Functor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
-        int actMin = zeropoints[0][0] + (int)std::round(minValue/scales[0][0]);
-        int actMax = zeropoints[0][0] + (int)std::round(maxValue/scales[0][0]);
-        params.set("activation_min", std::max(-128, actMin));
-        params.set("activation_max", std::min(127, actMax));
-        scales[1] = scales[0];
-        zeropoints[1] = zeropoints[0];
         return true;
     }
 
@@ -701,16 +688,11 @@ struct TanHFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
-        float inpScale = scales[0][0];
-        int inpZp = zeropoints[0][0];
-
-        float outScale = 1.f/128;
-        int outZp = 0;
-        scales[1][0] = outScale;
-        zeropoints[1][0] = outZp;
+        float inpScale = scales[0][0], outScale = scales[1][0];
+        int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
 
         Mat lookUpTable(1, 256, CV_8S);
         int8_t* table = lookUpTable.ptr<int8_t>();
@@ -818,8 +800,8 @@ struct SwishFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
         float inpScale = scales[0][0], outScale = scales[1][0];
         int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
@@ -943,8 +925,8 @@ struct MishFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
         float inpScale = scales[0][0], outScale = scales[1][0];
         int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
@@ -1057,16 +1039,11 @@ struct SigmoidFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
-        float inpScale = scales[0][0];
-        int inpZp = zeropoints[0][0];
-
-        float outScale = 1.f/256;
-        int outZp = -128;
-        scales[1][0] = outScale;
-        zeropoints[1][0] = outZp;
+        float inpScale = scales[0][0], outScale = scales[1][0];
+        int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
 
         Mat lookUpTable(1, 256, CV_8S);
         int8_t* table = lookUpTable.ptr<int8_t>();
@@ -1174,8 +1151,8 @@ struct ELUFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
         float inpScale = scales[0][0], outScale = scales[1][0];
         int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
@@ -1292,8 +1269,8 @@ struct AbsValFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
         float inpScale = scales[0][0], outScale = scales[1][0];
         int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];
@@ -1405,8 +1382,8 @@ struct BNLLFunctor : public BaseFunctor
     }
 #endif  // HAVE_VULKAN
 
-    bool tryQuantize(std::vector<std::vector<float> > &scales,
-                     std::vector<std::vector<int> > &zeropoints, LayerParams& params)
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params)
     {
         float inpScale = scales[0][0], outScale = scales[1][0];
         int inpZp = zeropoints[0][0], outZp = zeropoints[1][0];

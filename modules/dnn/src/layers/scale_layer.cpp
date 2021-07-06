@@ -344,8 +344,8 @@ public:
         shift = (hasBias && !blobs.empty()) ? blobs.back() : Mat();
     }
 
-    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
-                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         params.set("input_scale", DictValue::arrayReal(scales[0].data(), scales[0].size()));
         params.set("input_zeropoint", DictValue::arrayReal(zeropoints[0].data(), zeropoints[0].size()));

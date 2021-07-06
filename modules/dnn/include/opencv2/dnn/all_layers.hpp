@@ -277,7 +277,7 @@ CV__DNN_INLINE_NS_BEGIN
     class CV_EXPORTS PoolingLayerInt8 : public PoolingLayer
     {
     public:
-        int output_zp;
+        int input_zp, output_zp;
         static Ptr<PoolingLayerInt8> create(const LayerParams& params);
     };
 

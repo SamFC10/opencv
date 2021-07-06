@@ -2068,8 +2068,8 @@ public:
     }
 #endif
 
-    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
-                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         // References - https://arxiv.org/pdf/1712.05877.pdf
 

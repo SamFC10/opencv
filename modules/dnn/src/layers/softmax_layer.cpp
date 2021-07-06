@@ -374,22 +374,11 @@ public:
     }
 #endif  // HAVE_DNN_NGRAPH
 
-    virtual bool tryQuantize(std::vector<std::vector<float> > &scales,
-                             std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         float inpScale = scales[0][0];
         int inpZp = zeropoints[0][0];
-
-        if (logSoftMax)
-        {
-            scales[1][0] = 16.f / 256;
-            zeropoints[1][0] = 127;
-        }
-        else
-        {
-            scales[1][0] = 1.f / 256;
-            zeropoints[1][0] = -128;
-        }
 
         Mat lookUpTable(1, 256, CV_32F);
         float* table = lookUpTable.ptr<float>();

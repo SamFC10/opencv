@@ -172,7 +172,7 @@ public:
                     {
                         const int offset = srcOffset + cnDim * cnStep;
                         for (size_t i = 0; i < innerSize; i++)
-                            dstPtr[offset + i] = (int8_t)(output_zp + std::round(inv_scale*log(expPtr[srcPtr[offset + i] + 128]/expSum[i])));
+                            dstPtr[offset + i] = saturate_cast<int8_t>(output_zp + std::round(inv_scale*log(expPtr[srcPtr[offset + i] + 128]/expSum[i])));
                     }
                 }
                 else
@@ -181,7 +181,7 @@ public:
                     {
                         const int offset = srcOffset + cnDim * cnStep;
                         for (size_t i = 0; i < innerSize; i++)
-                            dstPtr[offset + i] = (int8_t)(output_zp + std::round(inv_scale*(expPtr[srcPtr[offset + i] + 128]/expSum[i])));
+                            dstPtr[offset + i] = saturate_cast<int8_t>(output_zp + std::round(inv_scale*(expPtr[srcPtr[offset + i] + 128]/expSum[i])));
                     }
                 }
             }
