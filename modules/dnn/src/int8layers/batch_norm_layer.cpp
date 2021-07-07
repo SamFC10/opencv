@@ -87,9 +87,8 @@ public:
 
         Mat b = numFusedBias == 1 ? Mat(1, numChannels, CV_32F, Scalar(b_.at<float>(0))) :
                 (b_.empty() ? Mat::zeros(1, numChannels, CV_32F) : b_);
-            
-        weights_ = Mat(); bias_ = Mat();
 
+        weights_ = Mat(); bias_ = Mat();
         multiply(origin_weights, w, weights_, input_sc/new_sc, CV_32F);
         multiply(origin_bias, w, bias_);
         add(bias_, b, bias_);

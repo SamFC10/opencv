@@ -337,12 +337,6 @@ CV__DNN_INLINE_NS_BEGIN
         static Ptr<FlattenLayer> create(const LayerParams &params);
     };
 
-    class CV_EXPORTS FlattenLayerInt8 : public Layer
-    {
-    public:
-        static Ptr<FlattenLayer> create(const LayerParams &params);
-    };
-
     class CV_EXPORTS QuantizeLayer : public Layer
     {
     public:
@@ -370,15 +364,9 @@ CV__DNN_INLINE_NS_BEGIN
          * Details: https://github.com/torch/nn/blob/master/doc/containers.md#depthconcat
          */
         bool padding;
+        int paddingValue;
 
         static Ptr<ConcatLayer> create(const LayerParams &params);
-    };
-
-    class CV_EXPORTS ConcatLayerInt8 : public ConcatLayer
-    {
-    public:
-        int output_zp;
-        static Ptr<ConcatLayerInt8> create(const LayerParams& params);
     };
 
     class CV_EXPORTS SplitLayer : public Layer
@@ -477,12 +465,6 @@ CV__DNN_INLINE_NS_BEGIN
     {
     public:
         static Ptr<PaddingLayer> create(const LayerParams& params);
-    };
-
-    class CV_EXPORTS PaddingLayerInt8 : public Layer
-    {
-    public:
-        static Ptr<PaddingLayerInt8> create(const LayerParams& params);
     };
 
     /* Activations */
@@ -649,6 +631,12 @@ CV__DNN_INLINE_NS_BEGIN
     };
 
     class CV_EXPORTS ShiftLayer : public Layer
+    {
+    public:
+        static Ptr<Layer> create(const LayerParams& params);
+    };
+
+    class CV_EXPORTS ShiftLayerInt8 : public Layer
     {
     public:
         static Ptr<Layer> create(const LayerParams& params);

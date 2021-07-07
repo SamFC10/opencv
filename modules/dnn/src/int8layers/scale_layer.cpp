@@ -205,5 +205,14 @@ Ptr<ScaleLayerInt8> ScaleLayerInt8::create(const LayerParams& params)
     return Ptr<ScaleLayerInt8>(new ScaleLayerInt8Impl(params));
 }
 
+Ptr<Layer> ShiftLayerInt8::create(const LayerParams& params)
+{
+    LayerParams scaleParams = params;
+    scaleParams.type = "ScaleInt8";
+    scaleParams.set("bias_term", true);
+    scaleParams.set("axis", 0);
+    return Ptr<ScaleLayerInt8>(new ScaleLayerInt8Impl(scaleParams));
+}
+
 }  // namespace dnn
 }  // namespace cv

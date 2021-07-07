@@ -4336,6 +4336,13 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
                 zp.push_back(-128);
             }
         }
+        else if (ld.type == "Split" || ld.type == "Slice")
+        {
+            std::vector<float> inp_sc; std::vector<int> inp_zp;
+            impl->getQuantizationParams(*ld.inputBlobs[0], inp_sc, inp_zp);
+            sc.assign(ld.outputBlobs.size(), inp_sc[0]);
+            zp.assign(ld.outputBlobs.size(), inp_zp[0]);
+        }
         else
         {
             for (int i = 0; i < ld.outputBlobs.size(); i++)
@@ -4350,6 +4357,7 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
     for (Impl::MapIdToLayerData::reverse_iterator it = impl->layers.rbegin(); it != impl->layers.rend(); ++it)
     {
         LayerData& ld = it->second;
+        // Layers with single output
         if ((ld.type == "Pooling" && toLowerCase(ld.params.get<String>("pool", "max")) == "max") || ld.type == "Padding" ||
             (ld.type == "ReLU" && !ld.params.get<float>("negative_slope", 0.f)) || ld.type == "ReLU6" || ld.type == "Concat")
         {
@@ -4358,6 +4366,17 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
                 LayerPin &pin = ld.inputBlobsId[i];
                 scales[pin.lid][pin.oid] = scales[ld.id][0];
                 zeropoints[pin.lid][pin.oid] = zeropoints[ld.id][0];
+            }
+        }
+        // Layers with multiple outputs. Number of outputs is equal to number of inputs
+        if (ld.type == "Blank" || ld.type == "Dropout" || ld.type == "Identity" || ld.type == "Silence" ||
+            ld.type == "Permute" || ld.type == "Reshape" || ld.type == "Reorg" || ld.type == "ShuffleChannel")
+        {
+            for (int i = 0; i < ld.outputBlobs.size(); i++)
+            {
+                LayerPin &pin = ld.inputBlobsId[i];
+                scales[pin.lid][pin.oid] = scales[ld.id][i];
+                zeropoints[pin.lid][pin.oid] = zeropoints[ld.id][i];
             }
         }
     }
