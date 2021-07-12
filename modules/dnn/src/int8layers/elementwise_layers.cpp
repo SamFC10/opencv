@@ -57,10 +57,7 @@ public:
     ActivationLayerInt8Impl(const LayerParams &params)
     {
         setParamsFrom(params);
-        activationMin = (int8_t)params.get<int>("activation_min", -128);
-        activationMax = (int8_t)params.get<int>("activation_max", 127);
-        activationLUT = (!blobs.empty()) ? blobs[0] : Mat();
-        CV_Assert(activationMin <= activationMax);
+        activationLUT = !blobs.empty() ? blobs[0] : Mat();
     }
 
     virtual bool supportBackend(int backendId) CV_OVERRIDE
@@ -83,21 +80,17 @@ public:
         const Mat* src;
         const Mat* lut;
         Mat* dst;
-        int8_t actMin, actMax;
         int nstripes;
 
-        Activation() : src(0), lut(0), dst(0), actMin(-128), actMax(127), nstripes(0){}
+        Activation() : src(0), lut(0), dst(0), nstripes(0){}
 
-        static void run(const Mat& src, const Mat& lut, Mat& dst,
-                        int8_t actMin, int8_t actMax, int nstripes)
+        static void run(const Mat& src, const Mat& lut, Mat& dst, int nstripes)
         {
             Activation p;
 
             p.src = &src;
             p.lut = &lut;
             p.dst = &dst;
-            p.actMin = actMin;
-            p.actMax = actMax;
             p.nstripes = nstripes;
 
             parallel_for_(Range(0, nstripes), p, nstripes);
@@ -105,7 +98,7 @@ public:
 
         void operator()(const Range &r) const CV_OVERRIDE
         {
-            const int8_t* table = lut->empty() ? 0 : lut->ptr<int8_t>();
+            const int8_t* table = lut->ptr<int8_t>();
             int nsamples = 1, outCn = 1;
             size_t planeSize = 1;
 
@@ -125,11 +118,6 @@ public:
             size_t stripeEnd = std::min(r.end*stripeSize, planeSize);
             int len = (int)(stripeEnd - stripeStart);
 
-#if CV_SIMD128
-            v_int8x16 qmin = v_setall_s8(actMin);
-            v_int8x16 qmax = v_setall_s8(actMax);
-#endif
-
             for( int i = 0; i < nsamples; i++ )
             {
                 const int8_t* srcptr = src->ptr<int8_t>(i) + stripeStart;
@@ -140,26 +128,16 @@ public:
 #if CV_SIMD128
                     for( ; i <= len - 16; i += 16 )
                     {
-                        if (table)
-                        {
-                            v_int8x16 out(table[srcptr[i] + 128], table[srcptr[i+1] + 128], table[srcptr[i+2] + 128], table[srcptr[i+3] + 128],
-                                          table[srcptr[i+4] + 128], table[srcptr[i+5] + 128], table[srcptr[i+6] + 128], table[srcptr[i+7] + 128],
-                                          table[srcptr[i+8] + 128], table[srcptr[i+9] + 128], table[srcptr[i+10] + 128], table[srcptr[i+11] + 128],
-                                          table[srcptr[i+12] + 128], table[srcptr[i+13] + 128], table[srcptr[i+14] + 128], table[srcptr[i+15] + 128]);
-                            v_store(dstptr + i, out);
-                        }
-                        else
-                        {
-                            v_store(dstptr + i, v_min(v_max(v_load(srcptr + i), qmin), qmax));
-                        }
+                        v_int8x16 out(table[srcptr[i] + 128], table[srcptr[i+1] + 128], table[srcptr[i+2] + 128], table[srcptr[i+3] + 128],
+                                      table[srcptr[i+4] + 128], table[srcptr[i+5] + 128], table[srcptr[i+6] + 128], table[srcptr[i+7] + 128],
+                                      table[srcptr[i+8] + 128], table[srcptr[i+9] + 128], table[srcptr[i+10] + 128], table[srcptr[i+11] + 128],
+                                      table[srcptr[i+12] + 128], table[srcptr[i+13] + 128], table[srcptr[i+14] + 128], table[srcptr[i+15] + 128]);
+                        v_store(dstptr + i, out);
                     }
 #endif
                     for( ; i < len; i++ )
                     {
-                        if (table)
-                            dstptr[i] = table[srcptr[i] + 128];
-                        else
-                            dstptr[i] = std::min(std::max(srcptr[i], actMin), actMax);
+                        dstptr[i] = table[srcptr[i] + 128];
                     }
                 }
             }
@@ -174,15 +152,22 @@ public:
         inputs_arr.getMatVector(inputs);
         outputs_arr.getMatVector(outputs);
 
-        const int nstripes = getNumThreads();
         for (size_t i = 0; i < inputs.size(); i++)
         {
             const Mat &src = inputs[i];
-            Mat &dst = outputs[i];
-            CV_Assert(src.size == dst.size && src.type() == dst.type() &&
-                      src.isContinuous() && dst.isContinuous() && src.type() == CV_8S);
+            if (!activationLUT.empty())
+            {
+                const int nstripes = getNumThreads();
+                Mat &dst = outputs[i];
+                CV_Assert(src.size == dst.size && src.type() == dst.type() &&
+                          src.isContinuous() && dst.isContinuous() && src.type() == CV_8S);
 
-            Activation::run(src, activationLUT, dst, activationMin, activationMax, nstripes);
+                Activation::run(src, activationLUT, dst, nstripes);
+            }
+            else
+            {
+                src.copyTo(outputs[i]);
+            }
         }
     }
 
@@ -232,7 +217,6 @@ public:
     }
 
     Mat activationLUT;
-    int8_t activationMin, activationMax;
 };
 
 Ptr<ActivationLayerInt8> ActivationLayerInt8::create(const LayerParams& params)

@@ -586,6 +586,12 @@ CV__DNN_INLINE_NS_BEGIN
         static Ptr<EltwiseLayer> create(const LayerParams &params);
     };
 
+    class CV_EXPORTS EltwiseLayerInt8 : public Layer
+    {
+    public:
+        static Ptr<EltwiseLayerInt8> create(const LayerParams &params);
+    };
+
     class CV_EXPORTS BatchNormLayer : public ActivationLayer
     {
     public:

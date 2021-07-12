@@ -112,7 +112,8 @@ public:
         for (int i = 0; i < numInps; i++)
         {
             inps[i].convertTo(inps_int8[i], CV_8S, 1.f/inputScale[i], inputZp[i]);
-            qnet.setInput(inps_int8[i]);
+            String inp_name = numInps > 1 ? (importer == "Caffe" ? cv::format("input_%d", i) : cv::format("%d", i)) : "";
+            qnet.setInput(inps_int8[i], inp_name);
         }
         qnet.forward(outs_int8);
 
@@ -254,7 +255,7 @@ TEST_P(Test_Int8_layers, Softmax)
     testLayer("layer_softmax", "Caffe", 0.0011, 0.0036);
     testLayer("keras_softmax", "TensorFlow", 0.00093, 0.0027);
     testLayer("slim_softmax", "TensorFlow", 0.0016, 0.0034);
-    testLayer("slim_softmax_v2", "TensorFlow", 0.004, 0.017);
+    testLayer("slim_softmax_v2", "TensorFlow", 0.0029, 0.017);
     testLayer("softmax", "ONNX", 0.0016, 0.0028);
     testLayer("log_softmax", "ONNX", 0.014, 0.025);
     testLayer("softmax_unfused", "ONNX", 0.0009, 0.0021);
@@ -351,18 +352,23 @@ TEST_P(Test_Int8_layers, Slice)
     testLayer("slice_opset_11_steps_5d", "ONNX", 0.0085, 0.021);
 }
 
-TEST_P(Test_Int8_layers, Split)
-{
-    testLayer("split_1", "ONNX", 0.002, 0.004);
-    testLayer("split_2", "ONNX", 0.002, 0.004);
-    testLayer("split_3", "ONNX", 0.002, 0.004);
-    testLayer("split_4", "ONNX", 0.002, 0.004);
-}
-
 TEST_P(Test_Int8_layers, Dropout)
 {
     testLayer("layer_dropout", "Caffe", 0.0021, 0.004);
     testLayer("dropout", "ONNX", 0.0029, 0.004);
+}
+
+TEST_P(Test_Int8_layers, Eltwise)
+{
+    testLayer("layer_eltwise", "Caffe", 0.062, 0.15);
+    testLayer("conv_2_inps", "Caffe", 0.0086, 0.0232, 2, 1, true, false);
+    testLayer("eltwise_sub", "TensorFlow", 0.015, 0.047);
+    testLayer("eltwise_add_vec", "TensorFlow", 0.037, 0.21); // tflite 0.0095, 0.0365
+    testLayer("eltwise_mul_vec", "TensorFlow", 0.173, 1.14); // tflite 0.0028, 0.017
+    testLayer("channel_broadcast", "TensorFlow", 0.0025, 0.0063);
+    testLayer("split_equals", "TensorFlow", 0.02, 0.065);
+    testLayer("mul", "ONNX", 0.0039, 0.014);
+    testLayer("split_max", "ONNX", 0.004, 0.012);
 }
 
 // TODO : skip this test for all other backends except OpenCV/CPU.

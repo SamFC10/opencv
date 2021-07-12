@@ -4354,29 +4354,33 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
 
     // For some layers, the input and output scales/zeropoints must be equal so that rescaling of inputs
     // is not needed during quantized inference. We start from the last layer and modify the layer's input scales/zeropoints
+    // TODO : Need a different approach. Current solution fails when 2 such layers have the same input layer
     for (Impl::MapIdToLayerData::reverse_iterator it = impl->layers.rbegin(); it != impl->layers.rend(); ++it)
     {
         LayerData& ld = it->second;
-        // Layers with single output
-        if ((ld.type == "Pooling" && toLowerCase(ld.params.get<String>("pool", "max")) == "max") || ld.type == "Padding" ||
-            (ld.type == "ReLU" && !ld.params.get<float>("negative_slope", 0.f)) || ld.type == "ReLU6" || ld.type == "Concat")
-        {
-            for (int i = 0; i < ld.inputBlobsId.size(); i++)
-            {
-                LayerPin &pin = ld.inputBlobsId[i];
-                scales[pin.lid][pin.oid] = scales[ld.id][0];
-                zeropoints[pin.lid][pin.oid] = zeropoints[ld.id][0];
-            }
-        }
         // Layers with multiple outputs. Number of outputs is equal to number of inputs
         if (ld.type == "Blank" || ld.type == "Dropout" || ld.type == "Identity" || ld.type == "Silence" ||
-            ld.type == "Permute" || ld.type == "Reshape" || ld.type == "Reorg" || ld.type == "ShuffleChannel")
+            ld.type == "Flatten" || ld.type == "Padding" || ld.type == "Permute" || ld.type == "Reshape" ||
+            ld.type == "ReLU6" || ld.type == "Reorg" || ld.type == "ShuffleChannel" ||
+           (ld.type == "ReLU" && !ld.params.get<float>("negative_slope", 0.f)) /* ReLU with negative slope 0 */)
         {
             for (int i = 0; i < ld.outputBlobs.size(); i++)
             {
                 LayerPin &pin = ld.inputBlobsId[i];
                 scales[pin.lid][pin.oid] = scales[ld.id][i];
                 zeropoints[pin.lid][pin.oid] = zeropoints[ld.id][i];
+            }
+        }
+        // Layers with multiple inputs and single output.
+        else if ((ld.type == "Pooling" && toLowerCase(ld.params.get<String>("pool", "max")) == "max") /* Max Pooling */ ||
+                 (ld.type == "Eltwise" && toLowerCase(ld.params.get<String>("operation", "sum")) == "max") /* Elementwise max */ ||
+                  ld.type == "Concat")
+        {
+            for (int i = 0; i < ld.inputBlobsId.size(); i++)
+            {
+                LayerPin &pin = ld.inputBlobsId[i];
+                scales[pin.lid][pin.oid] = scales[ld.id][0];
+                zeropoints[pin.lid][pin.oid] = zeropoints[ld.id][0];
             }
         }
     }
