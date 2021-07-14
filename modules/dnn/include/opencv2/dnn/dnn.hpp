@@ -583,7 +583,7 @@ CV__DNN_INLINE_NS_BEGIN
          *  @param inputsDtype Datatype of quantized net's inputs. Can be CV_32F or CV_8S.
          *  @param outputsDtype Datatype of quantized net's outputs. Can be CV_32F or CV_8S.
          */
-        CV_WRAP Net quantize(InputArrayOfArrays calibData, const int& inputsDtype, const int& outputsDtype);
+        CV_WRAP Net quantize(InputArrayOfArrays calibData, int inputsDtype, int outputsDtype);
 
         /** @brief Returns input scale and zeropoint for a quantized Net.
          *  @param scales output parameter for returning input scales.

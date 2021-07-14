@@ -4269,7 +4269,7 @@ void Net::forward(std::vector<std::vector<Mat> >& outputBlobs,
     }
 }
 
-Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const int& outputsDtype)
+Net Net::quantize(InputArrayOfArrays calibData, int inputsDtype, int outputsDtype)
 {
     CV_TRACE_FUNCTION();
 
@@ -4277,9 +4277,11 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
     if (impl->netWasQuantized)
         CV_Error(Error::StsBadArg, "Cannot quantize a quantized net");
 
+    CV_CheckType(inputsDtype, inputsDtype == CV_32F || inputsDtype == CV_8S, "Input depth should be CV_32F or CV_8S");
+    CV_CheckType(outputsDtype, outputsDtype == CV_32F || outputsDtype == CV_8S, "Output depth should be CV_32F or CV_8S");
+
     // Set-up floating point Net with calibration data as input.
     enableFusion(false);
-
     if (calibData.isMat())
     {
         setInput(calibData.getMat());
@@ -4388,6 +4390,9 @@ Net Net::quantize(InputArrayOfArrays calibData, const int& inputsDtype, const in
     // Create a new Net and add quantized layers to it.
     Net dstNet;
     dstNet.setInputsNames(impl->netInputLayer->outNames);
+    dstNet.setPreferableBackend(impl->preferableBackend);
+    dstNet.setPreferableTarget(impl->preferableTarget);
+
     for (Impl::MapIdToLayerData::iterator it = impl->layers.begin(); it != impl->layers.end(); it++)
     {
         LayerData ld = it->second;
