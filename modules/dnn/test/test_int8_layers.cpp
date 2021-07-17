@@ -29,7 +29,6 @@ public:
         String inpPath, outPath;
         Net net, qnet;
 
-        // Reuse as much data as possible from OpenCV Extra repo to test all variations of quantized layers.
         if (importer == "Caffe")
         {
             String prototxt = _tf("layers/" + basename + ".prototxt");
@@ -57,8 +56,8 @@ public:
             outPath = _tf("onnx/data/output_" + basename);
         }
         ASSERT_FALSE(net.empty());
-        net.setPreferableBackend(DNN_BACKEND_OPENCV);
-        net.setPreferableTarget(DNN_TARGET_CPU);
+        net.setPreferableBackend(backend);
+        net.setPreferableTarget(target);
 
         for (int i = 0; i < numInps; i++)
             inps[i] = blobFromNPY(inpPath + ((numInps > 1) ? cv::format("_%d.npy", i) : ".npy"));
@@ -334,6 +333,836 @@ TEST_P(Test_Int8_layers, Eltwise)
     testLayer("split_max", "ONNX", 0.004, 0.012);
 }
 
-// TODO : skip this test for all other backends except OpenCV/CPU.
-INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_layers, dnnBackendsAndTargets());
+// TODO : Only CPU backend has int8 implementation, so testing is done on OCV/CPU backend.
+//        Need to test the behaviour of int8 layers on other backends.
+INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_layers, Combine(Values(DNN_BACKEND_OPENCV), Values(DNN_TARGET_CPU)));
+
+class Test_Int8_nets : public DNNTestLayer
+{
+public:
+    void testClassificationNet(Net baseNet, const Mat& blob, const Mat& ref, double l1, double lInf)
+    {
+        Net qnet = baseNet.quantize(blob, CV_32F, CV_32F);
+        qnet.setPreferableBackend(backend);
+        qnet.setPreferableTarget(target);
+
+        qnet.setInput(blob);
+        Mat out = qnet.forward();
+        normAssert(ref, out, "", l1, lInf);
+    }
+
+    void testDetectionNet(Net baseNet, const Mat& blob, const Mat& ref,
+                          double confThreshold, double scoreDiff, double iouDiff)
+    {
+        Net qnet = baseNet.quantize(blob, CV_32F, CV_32F);
+        qnet.setPreferableBackend(backend);
+        qnet.setPreferableTarget(target);
+
+        qnet.setInput(blob);
+        Mat out = qnet.forward();
+        normAssertDetections(ref, out, "", confThreshold, scoreDiff, iouDiff);
+    }
+
+    void testFaster(Net baseNet, const Mat& ref, double confThreshold, double scoreDiff, double iouDiff)
+    {
+        Mat inp = imread(_tf("dog416.png"));
+        resize(inp, inp, Size(800, 600));
+        Mat blob = blobFromImage(inp, 1.0, Size(), Scalar(102.9801, 115.9465, 122.7717), false, false);
+        Mat imInfo = (Mat_<float>(1, 3) << inp.rows, inp.cols, 1.6f);
+
+        Net qnet = baseNet.quantize(std::vector<Mat>{blob, imInfo}, CV_32F, CV_32F);
+        qnet.setPreferableBackend(backend);
+        qnet.setPreferableTarget(target);
+
+        qnet.setInput(blob, "data");
+        qnet.setInput(imInfo, "im_info");
+        Mat out = qnet.forward();
+        normAssertDetections(ref, out, "", confThreshold, scoreDiff, iouDiff);
+    }
+
+    void testONNXNet(const String& basename, double l1, double lInf, bool useSoftmax = false)
+    {
+        String onnxmodel = findDataFile("dnn/onnx/models/" + basename + ".onnx", false);
+
+        Mat blob = readTensorFromONNX(findDataFile("dnn/onnx/data/input_" + basename + ".pb"));
+        Mat ref = readTensorFromONNX(findDataFile("dnn/onnx/data/output_" + basename + ".pb"));
+        Net baseNet = readNetFromONNX(onnxmodel);
+        baseNet.setPreferableBackend(backend);
+        baseNet.setPreferableTarget(target);
+
+        if (useSoftmax)
+        {
+            LayerParams lp;
+            baseNet.addLayerToPrev("softmaxLayer", "Softmax", lp);
+
+            baseNet.setInput(blob);
+            ref = baseNet.forward();
+        }
+
+        Net qnet = baseNet.quantize(blob, CV_32F, CV_32F);
+        qnet.setInput(blob);
+        Mat out = qnet.forward();
+        normAssert(ref, out, "", l1, lInf);
+    }
+
+    void testDarknetModel(const std::string& cfg, const std::string& weights,
+                          const cv::Mat& ref, double scoreDiff, double iouDiff,
+                          float confThreshold = 0.24, float nmsThreshold = 0.4)
+    {
+        CV_Assert(ref.cols == 7);
+        std::vector<std::vector<int> > refClassIds;
+        std::vector<std::vector<float> > refScores;
+        std::vector<std::vector<Rect2d> > refBoxes;
+        for (int i = 0; i < ref.rows; ++i)
+        {
+            int batchId = static_cast<int>(ref.at<float>(i, 0));
+            int classId = static_cast<int>(ref.at<float>(i, 1));
+            float score = ref.at<float>(i, 2);
+            float left  = ref.at<float>(i, 3);
+            float top   = ref.at<float>(i, 4);
+            float right  = ref.at<float>(i, 5);
+            float bottom = ref.at<float>(i, 6);
+            Rect2d box(left, top, right - left, bottom - top);
+            if (batchId >= refClassIds.size())
+            {
+                refClassIds.resize(batchId + 1);
+                refScores.resize(batchId + 1);
+                refBoxes.resize(batchId + 1);
+            }
+            refClassIds[batchId].push_back(classId);
+            refScores[batchId].push_back(score);
+            refBoxes[batchId].push_back(box);
+        }
+
+        Mat img1 = imread(_tf("dog416.png"));
+        Mat img2 = imread(_tf("street.png"));
+        std::vector<Mat> samples(2);
+        samples[0] = img1; samples[1] = img2;
+
+        // determine test type, whether batch or single img
+        int batch_size = refClassIds.size();
+        CV_Assert(batch_size == 1 || batch_size == 2);
+        samples.resize(batch_size);
+
+        Mat inp = blobFromImages(samples, 1.0/255, Size(416, 416), Scalar(), true, false);
+
+        Net baseNet = readNetFromDarknet(findDataFile("dnn/" + cfg), findDataFile("dnn/" + weights, false));
+        Net qnet = baseNet.quantize(inp, CV_32F, CV_32F);
+        qnet.setPreferableBackend(backend);
+        qnet.setPreferableTarget(target);
+        qnet.setInput(inp);
+        std::vector<Mat> outs;
+        qnet.forward(outs, qnet.getUnconnectedOutLayersNames());
+
+        for (int b = 0; b < batch_size; ++b)
+        {
+            std::vector<int> classIds;
+            std::vector<float> confidences;
+            std::vector<Rect2d> boxes;
+            for (int i = 0; i < outs.size(); ++i)
+            {
+                Mat out;
+                if (batch_size > 1){
+                    // get the sample slice from 3D matrix (batch, box, classes+5)
+                    Range ranges[3] = {Range(b, b+1), Range::all(), Range::all()};
+                    out = outs[i](ranges).reshape(1, outs[i].size[1]);
+                }else{
+                    out = outs[i];
+                }
+                for (int j = 0; j < out.rows; ++j)
+                {
+                    Mat scores = out.row(j).colRange(5, out.cols);
+                    double confidence;
+                    Point maxLoc;
+                    minMaxLoc(scores, 0, &confidence, 0, &maxLoc);
+
+                    if (confidence > confThreshold) {
+                        float* detection = out.ptr<float>(j);
+                        double centerX = detection[0];
+                        double centerY = detection[1];
+                        double width = detection[2];
+                        double height = detection[3];
+                        boxes.push_back(Rect2d(centerX - 0.5 * width, centerY - 0.5 * height,
+                                            width, height));
+                        confidences.push_back(confidence);
+                        classIds.push_back(maxLoc.x);
+                    }
+                }
+            }
+
+            // here we need NMS of boxes
+            std::vector<int> indices;
+            NMSBoxes(boxes, confidences, confThreshold, nmsThreshold, indices);
+
+            std::vector<int> nms_classIds;
+            std::vector<float> nms_confidences;
+            std::vector<Rect2d> nms_boxes;
+
+            for (size_t i = 0; i < indices.size(); ++i)
+            {
+                int idx = indices[i];
+                Rect2d box = boxes[idx];
+                float conf = confidences[idx];
+                int class_id = classIds[idx];
+                nms_boxes.push_back(box);
+                nms_confidences.push_back(conf);
+                nms_classIds.push_back(class_id);
+            }
+
+            if (cvIsNaN(iouDiff))
+            {
+                if (b == 0)
+                    std::cout << "Skip accuracy checks" << std::endl;
+                continue;
+            }
+
+            normAssertDetections(refClassIds[b], refScores[b], refBoxes[b], nms_classIds, nms_confidences, nms_boxes,
+                                 format("batch size %d, sample %d\n", batch_size, b).c_str(), confThreshold, scoreDiff, iouDiff);
+        }
+    }
+};
+
+TEST_P(Test_Int8_nets, AlexNet)
+{
+#if defined(OPENCV_32BIT_CONFIGURATION) && defined(HAVE_OPENCL)
+    applyTestTag(CV_TEST_TAG_MEMORY_2GB);
+#else
+    applyTestTag(target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB);
+#endif
+    ASSERT_TRUE(ocl::useOpenCL() || target == DNN_TARGET_CPU);
+
+    Net net = readNetFromCaffe(findDataFile("dnn/bvlc_alexnet.prototxt"),
+                               findDataFile("dnn/bvlc_alexnet.caffemodel", false));
+
+    Mat inp = imread(_tf("grace_hopper_227.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(227, 227), Scalar(), false);
+    Mat ref = blobFromNPY(_tf("caffe_alexnet_prob.npy"));
+
+    float l1 = 1e-5, lInf = 0.0013;
+    testClassificationNet(net, blob, ref, l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, GoogLeNet)
+{
+    Net net = readNetFromCaffe(findDataFile("dnn/bvlc_googlenet.prototxt"),
+                               findDataFile("dnn/bvlc_googlenet.caffemodel", false));
+
+    std::vector<Mat> inpMats;
+    inpMats.push_back( imread(_tf("googlenet_0.png")) );
+    inpMats.push_back( imread(_tf("googlenet_1.png")) );
+    Mat blob = blobFromImages(inpMats, 1.0, Size(224, 224), Scalar(), false);
+    Mat ref = blobFromNPY(_tf("googlenet_prob.npy"));
+
+    float l1 = 2e-4, lInf = 0.06;
+    testClassificationNet(net, blob, ref, l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, ResNet50)
+{
+    applyTestTag(target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB);
+    ASSERT_TRUE(ocl::useOpenCL() || target == DNN_TARGET_CPU);
+
+    Net net = readNetFromCaffe(findDataFile("dnn/ResNet-50-deploy.prototxt"),
+                               findDataFile("dnn/ResNet-50-model.caffemodel", false));
+
+    Mat inp = imread(_tf("googlenet_0.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(224, 224), Scalar(), false);
+    Mat ref = blobFromNPY(_tf("resnet50_prob.npy"));
+
+    float l1 = 2e-4, lInf = 0.035;
+    testClassificationNet(net, blob, ref, l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, DenseNet121)
+{
+    applyTestTag(CV_TEST_TAG_MEMORY_512MB);
+
+    Net net = readNetFromCaffe(findDataFile("dnn/DenseNet_121.prototxt", false),
+                               findDataFile("dnn/DenseNet_121.caffemodel", false));
+
+    Mat inp = imread(_tf("dog416.png"));
+    Mat blob = blobFromImage(inp, 1.0 / 255.0, Size(224, 224), Scalar(), true, true);
+    Mat ref = blobFromNPY(_tf("densenet_121_output.npy"));
+
+    float l1 = 0.76, lInf = 3.31; // seems wrong
+    testClassificationNet(net, blob, ref, l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, SqueezeNet_v1_1)
+{
+    if(target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_OPENCL_FP16);
+
+    Net net = readNetFromCaffe(findDataFile("dnn/squeezenet_v1.1.prototxt"),
+                               findDataFile("dnn/squeezenet_v1.1.caffemodel", false));
+
+    Mat inp = imread(_tf("googlenet_0.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(227, 227), Scalar(), false, true);
+    Mat ref = blobFromNPY(_tf("squeezenet_v1.1_prob.npy"));
+
+    float l1 = 3e-4, lInf = 0.056;
+    testClassificationNet(net, blob, ref, l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, CaffeNet)
+{
+#if defined(OPENCV_32BIT_CONFIGURATION) && (defined(HAVE_OPENCL) || defined(_WIN32))
+    applyTestTag(CV_TEST_TAG_MEMORY_2GB);
+#else
+    applyTestTag(target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB);
+#endif
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2019030000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_MYRIAD
+        && getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+    float l1 = 1e-5, lInf = 0.0022;
+    testONNXNet("caffenet", l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, RCNN_ILSVRC13)
+{
+#if defined(OPENCV_32BIT_CONFIGURATION) && (defined(HAVE_OPENCL) || defined(_WIN32))
+    applyTestTag(CV_TEST_TAG_MEMORY_2GB);
+#else
+    applyTestTag(target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB);
+#endif
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2019030000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_MYRIAD
+        && getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+    float l1 = 0.02, lInf = 0.042;
+    testONNXNet("rcnn_ilsvrc13", l1, lInf);
+}
+
+TEST_P(Test_Int8_nets, Inception_v2)
+{
+    testONNXNet("inception_v2",  default_l1,  default_lInf, true);
+}
+
+TEST_P(Test_Int8_nets, MobileNet_v2)
+{
+    testONNXNet("mobilenetv2", default_l1, default_lInf, true);
+}
+
+TEST_P(Test_Int8_nets, Shufflenet)
+{
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019)
+    {
+        if (target == DNN_TARGET_OPENCL_FP16) applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER);
+        if (target == DNN_TARGET_OPENCL)      applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER);
+        if (target == DNN_TARGET_MYRIAD)      applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER);
+    }
+    testONNXNet("shufflenet", default_l1, default_lInf);
+}
+
+TEST_P(Test_Int8_nets, MobileNet_SSD)
+{
+    Net net = readNetFromCaffe(findDataFile("dnn/MobileNetSSD_deploy.prototxt", false),
+                               findDataFile("dnn/MobileNetSSD_deploy.caffemodel", false));
+
+    Mat inp = imread(_tf("street.png"));
+    Mat blob = blobFromImage(inp, 1.0 / 127.5, Size(300, 300), Scalar(127.5, 127.5, 127.5), false);
+    Mat ref = blobFromNPY(_tf("mobilenet_ssd_caffe_out.npy"));
+
+    float confThreshold = FLT_MIN, scoreDiff = 0.059, iouDiff = 0.11;
+    testDetectionNet(net, blob, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, MobileNet_v1_SSD)
+{
+    Net net = readNetFromTensorflow(findDataFile("dnn/ssd_mobilenet_v1_coco_2017_11_17.pb", false),
+                                    findDataFile("dnn/ssd_mobilenet_v1_coco_2017_11_17.pbtxt"));
+
+    Mat inp = imread(_tf("dog416.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(300, 300), Scalar(), true, false);
+    Mat ref = blobFromNPY(_tf("tensorflow/ssd_mobilenet_v1_coco_2017_11_17.detection_out.npy"));
+
+    float confThreshold = 0.5, scoreDiff = 0.034, iouDiff = 0.13;
+    testDetectionNet(net, blob, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, MobileNet_v1_SSD_PPN)
+{
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2018050000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && (target == DNN_TARGET_OPENCL || target == DNN_TARGET_OPENCL_FP16))
+        applyTestTag(target == DNN_TARGET_OPENCL ? CV_TEST_TAG_DNN_SKIP_IE_OPENCL : CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16,
+                     CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+    Net net = readNetFromTensorflow(findDataFile("dnn/ssd_mobilenet_v1_ppn_coco.pb", false),
+                                    findDataFile("dnn/ssd_mobilenet_v1_ppn_coco.pbtxt"));
+
+    Mat inp = imread(_tf("dog416.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(300, 300), Scalar(), true, false);
+    Mat ref = blobFromNPY(_tf("tensorflow/ssd_mobilenet_v1_ppn_coco.detection_out.npy"));
+
+    float confThreshold = 0.51, scoreDiff = 0.04, iouDiff = 0.06;
+    testDetectionNet(net, blob, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, Inception_v2_SSD)
+{
+    applyTestTag(target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB);
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_LE(2019010000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_MYRIAD &&
+        getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+    Net net = readNetFromTensorflow(findDataFile("dnn/ssd_inception_v2_coco_2017_11_17.pb", false),
+                                    findDataFile("dnn/ssd_inception_v2_coco_2017_11_17.pbtxt"));
+
+    Mat inp = imread(_tf("street.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(300, 300), Scalar(), true, false);
+    Mat ref = (Mat_<float>(5, 7) << 0, 1, 0.90176028, 0.19872092, 0.36311883, 0.26461923, 0.63498729,
+                                    0, 3, 0.93569964, 0.64865261, 0.45906419, 0.80675775, 0.65708131,
+                                    0, 3, 0.75838411, 0.44668293, 0.45907149, 0.49459291, 0.52197015,
+                                    0, 10, 0.95932811, 0.38349164, 0.32528657, 0.40387636, 0.39165527,
+                                    0, 10, 0.93973452, 0.66561931, 0.37841269, 0.68074018, 0.42907384);
+
+    float confThreshold = 0.5, scoreDiff = 0.0114, iouDiff = 0.22;
+    testDetectionNet(net, blob, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, FasterRCNN_resnet50)
+{
+    applyTestTag(
+        (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_1GB : CV_TEST_TAG_MEMORY_2GB),
+        CV_TEST_TAG_LONG,
+        CV_TEST_TAG_DEBUG_VERYLONG
+    );
+
+#ifdef INF_ENGINE_RELEASE
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 &&
+        (INF_ENGINE_VER_MAJOR_LT(2019020000) || target != DNN_TARGET_CPU))
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+
+    if (INF_ENGINE_VER_MAJOR_GT(2019030000) &&
+        backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);
+#endif
+
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);
+
+    if (backend == DNN_BACKEND_OPENCV && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_OPENCL_FP16);
+
+    if (backend == DNN_BACKEND_CUDA && target == DNN_TARGET_CUDA_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_CUDA_FP16);
+
+    Net net = readNetFromTensorflow(findDataFile("dnn/faster_rcnn_resnet50_coco_2018_01_28.pb", false),
+                                    findDataFile("dnn/faster_rcnn_resnet50_coco_2018_01_28.pbtxt"));
+
+    Mat inp = imread(_tf("dog416.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(800, 600), Scalar(), true, false);
+    Mat ref = blobFromNPY(_tf("tensorflow/faster_rcnn_resnet50_coco_2018_01_28.detection_out.npy"));
+
+    float confThreshold = 0.5, scoreDiff = 0.025, iouDiff = 0.15;
+    testDetectionNet(net, blob, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, FasterRCNN_inceptionv2)
+{
+    applyTestTag(
+        (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_1GB : CV_TEST_TAG_MEMORY_2GB),
+        CV_TEST_TAG_LONG,
+        CV_TEST_TAG_DEBUG_VERYLONG
+    );
+
+#ifdef INF_ENGINE_RELEASE
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 &&
+        (INF_ENGINE_VER_MAJOR_LT(2019020000) || target != DNN_TARGET_CPU))
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+
+    if (INF_ENGINE_VER_MAJOR_GT(2019030000) &&
+        backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);
+#endif
+
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);
+
+    if (backend == DNN_BACKEND_OPENCV && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_OPENCL_FP16);
+
+    if (backend == DNN_BACKEND_CUDA && target == DNN_TARGET_CUDA_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_CUDA_FP16);
+
+    Net net = readNetFromTensorflow(findDataFile("dnn/faster_rcnn_inception_v2_coco_2018_01_28.pb", false),
+                                    findDataFile("dnn/faster_rcnn_inception_v2_coco_2018_01_28.pbtxt"));
+
+    Mat inp = imread(_tf("dog416.png"));
+    Mat blob = blobFromImage(inp, 1.0, Size(800, 600), Scalar(), true, false);
+    Mat ref = blobFromNPY(_tf("tensorflow/faster_rcnn_inception_v2_coco_2018_01_28.detection_out.npy"));
+
+    float confThreshold = 0.5, scoreDiff = 0.21, iouDiff = 0.08;
+    testDetectionNet(net, blob, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, FasterRCNN_vgg16)
+{
+    applyTestTag(
+#if defined(OPENCV_32BIT_CONFIGURATION) && defined(HAVE_OPENCL)
+        CV_TEST_TAG_MEMORY_2GB,
+#else
+        (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_1GB : CV_TEST_TAG_MEMORY_2GB),
+#endif
+        CV_TEST_TAG_LONG,
+        CV_TEST_TAG_DEBUG_VERYLONG
+    );
+
+#if defined(INF_ENGINE_RELEASE)
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 || backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && (target == DNN_TARGET_OPENCL || target == DNN_TARGET_OPENCL_FP16))
+        applyTestTag(target == DNN_TARGET_OPENCL ? CV_TEST_TAG_DNN_SKIP_IE_OPENCL : CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16);
+
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_NGRAPH, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD);
+#endif
+
+    Net net = readNetFromCaffe(findDataFile("dnn/faster_rcnn_vgg16.prototxt"),
+                               findDataFile("dnn/VGG16_faster_rcnn_final.caffemodel", false));
+
+    Mat ref = (Mat_<float>(3, 7) << 0, 2, 0.949398, 99.2454, 210.141, 601.205, 462.849,
+                                    0, 7, 0.997022, 481.841, 92.3218, 722.685, 175.953,
+                                    0, 12, 0.993028, 133.221, 189.377, 350.994, 563.166);
+
+    float confThreshold = 0.8, scoreDiff = 0.024, iouDiff = 0.35;
+    testFaster(net, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, FasterRCNN_zf)
+{
+    applyTestTag(
+#if defined(OPENCV_32BIT_CONFIGURATION) && defined(HAVE_OPENCL)
+        CV_TEST_TAG_MEMORY_2GB,
+#else
+        (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB),
+#endif
+        CV_TEST_TAG_DEBUG_LONG
+    );
+
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
+         backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16);
+
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
+         backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD);
+
+    if (target == DNN_TARGET_CUDA_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_CUDA_FP16);
+
+    Net net = readNetFromCaffe(findDataFile("dnn/faster_rcnn_zf.prototxt"),
+                               findDataFile("dnn/ZF_faster_rcnn_final.caffemodel", false));
+
+    Mat ref = (Mat_<float>(3, 7) << 0, 2, 0.90121, 120.407, 115.83, 570.586, 528.395,
+                                    0, 7, 0.988779, 469.849, 75.1756, 718.64, 186.762,
+                                    0, 12, 0.967198, 138.588, 206.843, 329.766, 553.176);
+
+    float confThreshold = 0.8, scoreDiff = 0.021, iouDiff = 0.1;
+    testFaster(net, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, RFCN)
+{
+    applyTestTag(
+        (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_2GB),
+        CV_TEST_TAG_LONG,
+        CV_TEST_TAG_DEBUG_VERYLONG
+    );
+
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
+         backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16);
+
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
+         backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD);
+
+    Net net = readNetFromCaffe(findDataFile("dnn/rfcn_pascal_voc_resnet50.prototxt"),
+                               findDataFile("dnn/resnet50_rfcn_final.caffemodel", false));
+
+    Mat ref = (Mat_<float>(2, 7) << 0, 7, 0.991359, 491.822, 81.1668, 702.573, 178.234,
+                                    0, 12, 0.94786, 132.093, 223.903, 338.077, 566.16);
+
+    float confThreshold = 0.8, scoreDiff = 0.017, iouDiff = 0.11;
+    testFaster(net, ref, confThreshold, scoreDiff, iouDiff);
+}
+
+TEST_P(Test_Int8_nets, YoloVoc)
+{
+    applyTestTag(
+#if defined(OPENCV_32BIT_CONFIGURATION) && defined(HAVE_OPENCL)
+        CV_TEST_TAG_MEMORY_2GB,
+#else
+        CV_TEST_TAG_MEMORY_1GB,
+#endif
+        CV_TEST_TAG_LONG
+    );
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2020040000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_GE(2019010000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16);
+#endif
+#if defined(INF_ENGINE_RELEASE)
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 || backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) &&
+        target == DNN_TARGET_MYRIAD && getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X);
+#endif
+
+    Mat ref = (Mat_<float>(6, 7) << 0, 6,  0.750469f, 0.577374f, 0.127391f, 0.902949f, 0.300809f,
+                                    0, 1,  0.780879f, 0.270762f, 0.264102f, 0.732475f, 0.745412f,
+                                    0, 11, 0.901615f, 0.1386f,   0.338509f, 0.421337f, 0.938789f,
+                                    1, 14, 0.623813f, 0.183179f, 0.381921f, 0.247726f, 0.625847f,
+                                    1, 6,  0.667770f, 0.446555f, 0.453578f, 0.499986f, 0.519167f,
+                                    1, 6,  0.844947f, 0.637058f, 0.460398f, 0.828508f, 0.66427f);
+
+    std::string config_file = "yolo-voc.cfg";
+    std::string weights_file = "yolo-voc.weights";
+
+    double scoreDiff = 0.1, iouDiff = 0.3;
+    {
+    SCOPED_TRACE("batch size 1");
+    testDarknetModel(config_file, weights_file, ref.rowRange(0, 3), scoreDiff, iouDiff);
+    }
+
+    {
+    SCOPED_TRACE("batch size 2");
+    testDarknetModel(config_file, weights_file, ref, scoreDiff, iouDiff);
+    }
+}
+
+TEST_P(Test_Int8_nets, TinyYoloVoc)
+{
+    applyTestTag(CV_TEST_TAG_MEMORY_512MB);
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2020040000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+#if defined(INF_ENGINE_RELEASE)
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 || backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) &&
+        target == DNN_TARGET_MYRIAD && getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X);
+#endif
+
+    Mat ref = (Mat_<float>(4, 7) << 0, 6,  0.761967f, 0.579042f, 0.159161f, 0.894482f, 0.31994f,
+                                    0, 11, 0.780595f, 0.129696f, 0.386467f, 0.445275f, 0.920994f,
+                                    1, 6,  0.651450f, 0.460526f, 0.458019f, 0.522527f, 0.5341f,
+                                    1, 6,  0.928758f, 0.651024f, 0.463539f, 0.823784f, 0.654998f);
+
+    std::string config_file = "tiny-yolo-voc.cfg";
+    std::string weights_file = "tiny-yolo-voc.weights";
+
+    double scoreDiff = 0.043, iouDiff = 0.12;
+    {
+    SCOPED_TRACE("batch size 1");
+    testDarknetModel(config_file, weights_file, ref.rowRange(0, 2), scoreDiff, iouDiff);
+    }
+
+    {
+    SCOPED_TRACE("batch size 2");
+    testDarknetModel(config_file, weights_file, ref, scoreDiff, iouDiff);
+    }
+}
+
+TEST_P(Test_Int8_nets, YOLOv3)
+{
+    applyTestTag(CV_TEST_TAG_LONG, (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_1GB : CV_TEST_TAG_MEMORY_2GB));
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2020040000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH);
+
+    const int N0 = 3;
+    const int N1 = 6;
+    static const float ref_[/* (N0 + N1) * 7 */] = {
+0, 16, 0.998836f, 0.160024f, 0.389964f, 0.417885f, 0.943716f,
+0, 1, 0.987908f, 0.150913f, 0.221933f, 0.742255f, 0.746261f,
+0, 7, 0.952983f, 0.614621f, 0.150257f, 0.901368f, 0.289251f,
+
+1, 2, 0.997412f, 0.647584f, 0.459939f, 0.821037f, 0.663947f,
+1, 2, 0.989633f, 0.450719f, 0.463353f, 0.496306f, 0.522258f,
+1, 0, 0.980053f, 0.195856f, 0.378454f, 0.258626f, 0.629257f,
+1, 9, 0.785341f, 0.665503f, 0.373543f, 0.688893f, 0.439244f,
+1, 9, 0.733275f, 0.376029f, 0.315694f, 0.401776f, 0.395165f,
+1, 9, 0.384815f, 0.659824f, 0.372389f, 0.673927f, 0.429412f,
+    };
+    Mat ref(N0 + N1, 7, CV_32FC1, (void*)ref_);
+
+    std::string config_file = "yolov3.cfg";
+    std::string weights_file = "yolov3.weights";
+
+    double scoreDiff = 0.08, iouDiff = 0.21, confThreshold = 0.25;
+    {
+        SCOPED_TRACE("batch size 1");
+        testDarknetModel(config_file, weights_file, ref.rowRange(0, N0), scoreDiff, iouDiff, confThreshold);
+    }
+
+#if defined(INF_ENGINE_RELEASE)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019)
+    {
+        if (target == DNN_TARGET_OPENCL)
+            applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+        else if (target == DNN_TARGET_OPENCL_FP16 && INF_ENGINE_VER_MAJOR_LE(202010000))
+            applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+        else if (target == DNN_TARGET_MYRIAD &&
+                 getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+            applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X);
+    }
+#endif
+
+    {
+        SCOPED_TRACE("batch size 2");
+        testDarknetModel(config_file, weights_file, ref, scoreDiff, iouDiff, confThreshold);
+    }
+}
+
+TEST_P(Test_Int8_nets, YOLOv4)
+{
+    applyTestTag(CV_TEST_TAG_LONG, (target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_1GB : CV_TEST_TAG_MEMORY_2GB));
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_EQ(2020040000)
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+#if defined(INF_ENGINE_RELEASE)
+    if (target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+    const int N0 = 3;
+    const int N1 = 7;
+    static const float ref_[/* (N0 + N1) * 7 */] = {
+0, 16, 0.992194f, 0.172375f, 0.402458f, 0.403918f, 0.932801f,
+0, 1, 0.988326f, 0.166708f, 0.228236f, 0.737208f, 0.735803f,
+0, 7, 0.94639f, 0.602523f, 0.130399f, 0.901623f, 0.298452f,
+
+1, 2, 0.99761f, 0.646556f, 0.45985f, 0.816041f, 0.659067f,
+1, 0, 0.988913f, 0.201726f, 0.360282f, 0.266181f, 0.631728f,
+1, 2, 0.98233f, 0.452007f, 0.462217f, 0.495612f, 0.521687f,
+1, 9, 0.919195f, 0.374642f, 0.316524f, 0.398126f, 0.393714f,
+1, 9, 0.856303f, 0.666842f, 0.372215f, 0.685539f, 0.44141f,
+1, 9, 0.313516f, 0.656791f, 0.374734f, 0.671959f, 0.438371f,
+1, 9, 0.256625f, 0.940232f, 0.326931f, 0.967586f, 0.374002f,
+    };
+    Mat ref(N0 + N1, 7, CV_32FC1, (void*)ref_);
+
+    std::string config_file = "yolov4.cfg";
+    std::string weights_file = "yolov4.weights";
+    double scoreDiff = 0.1, iouDiff = 0.15;
+    {
+        SCOPED_TRACE("batch size 1");
+        testDarknetModel(config_file, weights_file, ref.rowRange(0, N0), scoreDiff, iouDiff);
+    }
+
+    {
+        SCOPED_TRACE("batch size 2");
+
+#if defined(INF_ENGINE_RELEASE)
+        if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019)
+        {
+            if (target == DNN_TARGET_OPENCL)
+                applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+            else if (target == DNN_TARGET_OPENCL_FP16 && INF_ENGINE_VER_MAJOR_LE(202010000))
+                applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+            else if (target == DNN_TARGET_MYRIAD &&
+                     getInferenceEngineVPUType() == CV_DNN_INFERENCE_ENGINE_VPU_TYPE_MYRIAD_X)
+                applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD_X);
+        }
+#endif
+
+        testDarknetModel(config_file, weights_file, ref, scoreDiff, iouDiff);
+    }
+}
+
+TEST_P(Test_Int8_nets, YOLOv4_tiny)
+{
+    applyTestTag(
+        target == DNN_TARGET_CPU ? CV_TEST_TAG_MEMORY_512MB : CV_TEST_TAG_MEMORY_1GB
+    );
+
+#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_GE(2021010000)
+    if (target == DNN_TARGET_MYRIAD)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+    const float confThreshold = 0.6;
+
+    const int N0 = 2;
+    const int N1 = 3;
+    static const float ref_[/* (N0 + N1) * 7 */] = {
+0, 7, 0.85935f, 0.593484f, 0.141211f, 0.920356f, 0.291593f,
+0, 16, 0.795188f, 0.169207f, 0.386886f, 0.423753f, 0.933004f,
+
+1, 2, 0.996832f, 0.653802f, 0.464573f, 0.815193f, 0.653292f,
+1, 2, 0.963325f, 0.451151f, 0.458915f, 0.496255f, 0.52241f,
+1, 0, 0.926244f, 0.194851f, 0.361743f, 0.260277f, 0.632364f,
+    };
+    Mat ref(N0 + N1, 7, CV_32FC1, (void*)ref_);
+
+    std::string config_file = "yolov4-tiny.cfg";
+    std::string weights_file = "yolov4-tiny.weights";
+    double scoreDiff = 0.11, iouDiff = 0.082;
+
+#if defined(INF_ENGINE_RELEASE)
+    if (target == DNN_TARGET_MYRIAD)  // bad accuracy
+        iouDiff = std::numeric_limits<double>::quiet_NaN();
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_OPENCL)
+        iouDiff = std::numeric_limits<double>::quiet_NaN();
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
+         backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && target == DNN_TARGET_OPENCL_FP16)
+        iouDiff = std::numeric_limits<double>::quiet_NaN();
+#endif
+
+    {
+        SCOPED_TRACE("batch size 1");
+        testDarknetModel(config_file, weights_file, ref.rowRange(0, N0), scoreDiff, iouDiff, confThreshold);
+    }
+
+    /* bad accuracy on second image
+    {
+        SCOPED_TRACE("batch size 2");
+        testDarknetModel(config_file, weights_file, ref, scoreDiff, iouDiff, confThreshold);
+    }
+    */
+
+#if defined(INF_ENGINE_RELEASE)
+    if (target == DNN_TARGET_MYRIAD)  // bad accuracy
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    if (backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && target == DNN_TARGET_OPENCL)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    if ((backend == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
+         backend == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) && target == DNN_TARGET_OPENCL_FP16)
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+}
+
+// TODO : Only CPU backend has int8 implementation, so testing is done on OCV/CPU backend.
+//        Need to test the behaviour of int8 layers on other backends.
+INSTANTIATE_TEST_CASE_P(/**/, Test_Int8_nets, Combine(Values(DNN_BACKEND_OPENCV), Values(DNN_TARGET_CPU)));
 }} // namespace

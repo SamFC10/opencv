@@ -173,6 +173,7 @@ void initializeLayerFactory()
     CV_DNN_REGISTER_LAYER_CLASS(ReshapeInt8,      ReshapeLayer);
     CV_DNN_REGISTER_LAYER_CLASS(SplitInt8,        SplitLayer);
     CV_DNN_REGISTER_LAYER_CLASS(SliceInt8,        SliceLayer);
+    CV_DNN_REGISTER_LAYER_CLASS(CropInt8,         CropLayer);
     CV_DNN_REGISTER_LAYER_CLASS(PermuteInt8,      PermuteLayer);
     CV_DNN_REGISTER_LAYER_CLASS(ReorgInt8,        ReorgLayer);
     CV_DNN_REGISTER_LAYER_CLASS(ShuffleChannelInt8, ShuffleChannelLayer);

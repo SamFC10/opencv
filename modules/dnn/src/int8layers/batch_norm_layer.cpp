@@ -76,10 +76,10 @@ public:
         top->getScaleZeropoint(new_sc, new_zp);
 
         Mat w = numFusedWeights == 1 ? Mat(1, numChannels, CV_32F, Scalar(w_.at<float>(0))) :
-                (w_.empty() ? Mat::ones(1, numChannels, CV_32F) : w_);
+                (w_.empty() ? Mat::ones(1, numChannels, CV_32F) : w_.reshape(1, 1));
 
         Mat b = numFusedBias == 1 ? Mat(1, numChannels, CV_32F, Scalar(b_.at<float>(0))) :
-                (b_.empty() ? Mat::zeros(1, numChannels, CV_32F) : b_);
+                (b_.empty() ? Mat::zeros(1, numChannels, CV_32F) : b_.reshape(1, 1));
 
         weights_ = Mat(); bias_ = Mat();
         multiply(origin_weights, w, weights_, input_sc/new_sc, CV_32F);

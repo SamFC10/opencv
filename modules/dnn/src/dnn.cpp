@@ -4338,7 +4338,7 @@ Net Net::quantize(InputArrayOfArrays calibData, int inputsDtype, int outputsDtyp
                 zp.push_back(-128);
             }
         }
-        else if (ld.type == "Split" || ld.type == "Slice")
+        else if (ld.type == "Split" || ld.type == "Slice" || ld.type == "Crop")
         {
             std::vector<float> inp_sc; std::vector<int> inp_zp;
             impl->getQuantizationParams(*ld.inputBlobs[0], inp_sc, inp_zp);
