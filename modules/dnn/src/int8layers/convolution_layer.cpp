@@ -576,8 +576,8 @@ public:
                                              w10 = wptr[3], w11 = wptr[4], w12 = wptr[5],
                                              w20_ = wptr[6], w21_ = wptr[7], w22_ = wptr[8];
                                 int outW1 = min(outW, (width - dilation_w*(kernel_w - 1) + pad_l)/stride_w);
-                                int bias = biasptr[out_d], mult = multptr[out_d];
-                                int biasCopy;
+                                int bias = biasptr[out_d], biasCopy;
+                                float mult = multptr[out_d];
 
                                 for (int out_i = 0; out_i < outH; out_i++)
                                 {
