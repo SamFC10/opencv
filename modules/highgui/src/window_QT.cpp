@@ -63,6 +63,7 @@
     #endif
 #endif
 
+using namespace cv;
 
 //Static and global first
 static GuiReceiver *guiMainThread = NULL;
@@ -197,7 +198,7 @@ void cvSetPropWindow_QT(const char* name,double prop_value)
         Q_ARG(double, prop_value));
 }
 
-void cv::setWindowTitle(const String& winname, const String& title)
+void setWindowTitle_QT(const String& winname, const String& title)
 {
     if (!guiMainThread)
         CV_Error(Error::StsNullPtr, "NULL guiReceiver (please create a window)");
@@ -2882,18 +2883,19 @@ inline bool DefaultViewPort::isSameSize(IplImage* img1, IplImage* img2)
 void DefaultViewPort::controlImagePosition()
 {
     qreal left, top, right, bottom;
+    qreal factor = 1.0 / param_matrixWorld.m11();
 
     //after check top-left, bottom right corner to avoid getting "out" during zoom/panning
     param_matrixWorld.map(0,0,&left,&top);
 
     if (left > 0)
     {
-        param_matrixWorld.translate(-left,0);
+        param_matrixWorld.translate(-left * factor, 0);
         left = 0;
     }
     if (top > 0)
     {
-        param_matrixWorld.translate(0,-top);
+        param_matrixWorld.translate(0, -top * factor);
         top = 0;
     }
     //-------
@@ -2902,12 +2904,12 @@ void DefaultViewPort::controlImagePosition()
     param_matrixWorld.map(sizeImage.width(),sizeImage.height(),&right,&bottom);
     if (right < sizeImage.width())
     {
-        param_matrixWorld.translate(sizeImage.width()-right,0);
+        param_matrixWorld.translate((sizeImage.width() - right) * factor, 0);
         right = sizeImage.width();
     }
     if (bottom < sizeImage.height())
     {
-        param_matrixWorld.translate(0,sizeImage.height()-bottom);
+        param_matrixWorld.translate(0, (sizeImage.height() - bottom) * factor);
         bottom = sizeImage.height();
     }
 
